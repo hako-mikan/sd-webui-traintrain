@@ -27,7 +27,7 @@ Stable DiffusionのLoRAを学習するツールです。Stable Diffusion Web-UI�
 　Web-UI 1.7で動作します。
 
 ## インストール
-　Web-UIのInstall From URLに`https://github.com/hako-mikan/sd-webui-traintrain`と入力しInstallボタンを押し再起動します。初回起動時少し(数秒～数十秒)時間が掛かります。
+　Web-UIのInstall From URLに`https://github.com/hako-mikan/sd-webui-traintrain`と入力しInstallボタンを押します。少し(数秒～数十秒)時間が掛かります。
 
 ## 使い方
 　モードごとの必須パラメーターを入力しStart Trainingボタンを押すと学習が始まります。作成されたLoRAはLoRA用のフォルダに保存されます。モデルとVAEを選択しない場合、現在ロードされているモデルとVAEが使われます。
