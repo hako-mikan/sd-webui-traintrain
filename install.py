@@ -21,7 +21,7 @@ requirements = [
 ]
 
 for module in requirements:
-    if not launch.is_installed(module.split("=")[0]):
+    if not launch.is_installed(module):
         launch.run_pip(f"install {module}", module)
 
 if os.name == 'nt':
