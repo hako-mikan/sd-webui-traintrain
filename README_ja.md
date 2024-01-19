@@ -49,15 +49,20 @@ Stable DiffusionのLoRAを学習するツールです。Stable Diffusion Web-UI�
 ## iLECO
 　iLECO(instant-LECO)はLECOの学習過程を高速化したもので、Original Promptで指定した概念をTarget Promptの概念に近づけるような学習を行います。Target Promptに何も入れない場合、その概念を除去するような学習になります。
 　例としてどんなモデルでも強固に出てくるMona Lisaさんを消してみます。Original Promptに「Mona Lisa」、Target Promptは空欄にします。`train iteration` の値が500程度あれば収束します。`alpha`の値は通常rankより小さな値を設定しますが、iLECOの場合はrankより大きな値にした方がいい場合もあります。
+ ![](https://github.com/hako-mikan/sd-webui-traintrain/blob/images/sample1.jpg)  
 Mona Lisaさんを消すことができました。次にTarget Promptに「Vincent van Gogh Sunflowers」と入れてみます。すると、モナリザさんがひまわりになるLoRAができました。
-
+![](https://github.com/hako-mikan/sd-webui-traintrain/blob/images/sample2.jpg) 
 Original Promptに「red」、Target Promptに「blue」を入れてみます。赤を青くするLoRAができましたね。
-
+ ![](https://github.com/hako-mikan/sd-webui-traintrain/blob/images/sample3.jpg) 
+ 
 ## Difference
 　ふたつの差分画像からLoRAを作成します。いわゆるコピー機学習法というものです。いったん同じ画像しか出ないLoRA(コピー機)を作成した後、コピー機をLoRAを適用した状態で差分の学習を行うことで差分相当のLoRAをつくる方法です。Original, Targetに画像を設定してください。画像サイズは同じにしてください。
-　まずコピー機の学習が始まり、その後差分の学習が始まります。例として目を閉じるLoRAを作ってみます。以下のふたつの画像を使います。
+　まずコピー機の学習が始まり、その後差分の学習が始まります。例として目を閉じるLoRAを作ってみます。以下のふたつの画像を使います。  
+   <img src="https://github.com/hako-mikan/sd-webui-traintrain/blob/images/sample4.jpg" width="200">
+   <img src="https://github.com/hako-mikan/sd-webui-traintrain/blob/images/sample5.jpg" width="200">  
 　Difference_Use2ndPassSettingsを使います。`train batch size`は1～3を設定します。大きな値を入れてもあまり意味はありません。できました。目を閉じる以外はほとんど画風や構図に影響を与えていません。これは2ndPassでrank(dim)を4と小さくしているためです。これをコピー機と同じ16にしてしまうと、画風や構図に影響を与えてしまいます。
-
+ ![](https://github.com/hako-mikan/sd-webui-traintrain/blob/images/sample6.jpg) 
+   
 > [!TIP]
 > VRAMが足りない場合は`gradient checkpointng`を有効化して下さい。計算時間が少し長くなる代わりにVRAM使用量を抑えられます。場合によっては`gradient checkpointng`を有効化してバッチサイズを大きくした方が計算時間が短くなる場合があります。コピー機学習ではバッチサイズを3より大きくしても変化は少ないので3以下の方がいいでしょう。バッチサイズは一度に学習する画像の数ですが、バッチサイズを倍にしたときに`iteration`を半分にできるかというとそう簡単な話ではありません。1ステップの学習で1回のウェイトの更新が行われますが、バッチサイズを倍にしてもこの回数は倍にはなりませんし、倍の効率で学習が行われるわけではないからです。
 
