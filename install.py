@@ -4,7 +4,7 @@ import subprocess
 
 requirements = [
 "scipy",
-"diffusers",
+"diffusers==0.20.0",
 "safetensors",
 "pyyaml",
 "pydantic",
