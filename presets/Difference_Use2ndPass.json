@@ -68,7 +68,7 @@
     "save_overwrite": false,
     "save_as_json": false,
     "model_v_pred": false,
-    "use_2nd_pass_settings": false,
+    "use_2nd_pass_settings": true,
     "2nd pass": {
         "network_type": "lierla",
         "network_rank": "4",
