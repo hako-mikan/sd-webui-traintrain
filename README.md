@@ -1,5 +1,3 @@
-Here is the translation of the provided text:
-
 # TrainTrain
 - This is an extension for [AUTOMATIC1111's stable-diffusion-webui](https://github.com/AUTOMATIC1111/stable-diffusion-webui).
 - You can create LoRA, iLECO, and differential LoRA.
