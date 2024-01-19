@@ -50,13 +50,19 @@ Learn LoRA from images.
 ## iLECO
    iLECO (instant-LECO) is a faster version of LECO training, transforming the concept specified in Original Prompt closer to the concept in Target Prompt. If nothing is entered in Target Prompt, it becomes training to remove that concept.
    For example, let's erase the Mona Lisa, which appears robustly in any model. Enter "Mona Lisa" in Original Prompt and leave Target Prompt blank. It converges with about 500 `train iterations`. The value of `alpha` is usually set smaller than rank, but in the case of iLECO, a larger value than rank may be better.
-   We succeeded in erasing the Mona Lisa. Next, enter "Vincent van Gogh Sunflowers" in Target Prompt. Now, the Mona Lisa turns into sunflowers in the LoRA.
+![](https://github.com/hako-mikan/sd-webui-traintrain/blob/images/sample1.jpg)   
+　We succeeded in erasing the Mona Lisa. Next, enter "Vincent van Gogh Sunflowers" in Target Prompt. Now, the Mona Lisa turns into sunflowers in the LoRA.
+ ![](https://github.com/hako-mikan/sd-webui-traintrain/blob/images/sample2.jpg)   
    Try entering "red" in Original Prompt and "blue" in Target Prompt. You get a LoRA that turns red into blue.
-
+ ![](https://github.com/hako-mikan/sd-webui-traintrain/blob/images/sample3.jpg) 
 ## Difference
    Creates LoRA from two differential images. This is known as the copy machine learning method. First, create a copy machine LoRA (which only produces the same image), then apply LoRA and train for the difference to create a differential LoRA. Set images in Original and Target. The image size should be the same.
-   First, training for the copy machine begins, followed by training for the difference. For example, let's make a LoRA for closing eyes using the following two images.
-   Use Difference_Use2ndPassSettings. Set `train batch size` to 1-3. A larger value does not make much difference. We succeeded. Other than closing the eyes, there is almost no impact on the painting style or composition. This is because the rank(dim) is set to 4, which is small in the 2ndPass. If you set this to the same 16 as the copy machine, it will affect the painting style and composition.
+   First, training for the copy machine begins, followed by training for the difference. For example, let's make a LoRA for closing eyes using the following two images.  
+   <img src="https://github.com/hako-mikan/sd-webui-traintrain/blob/images/sample4.jpg" width="200">
+   <img src="https://github.com/hako-mikan/sd-webui-traintrain/blob/images/sample5.jpg" width="200">  
+   Use Difference_Use2ndPass. Set `train batch size` to 1-3. A larger value does not make much difference.   
+    ![](https://github.com/hako-mikan/sd-webui-traintrain/blob/images/sample6.jpg)   
+    We succeeded. Other than closing the eyes, there is almost no impact on the painting style or composition. This is because the rank(dim) is set to 4, which is small in the 2ndPass. If you set this to the same 16 as the copy machine, it will affect the painting style and composition.
 
 > [!TIP]
 > If you don't have enough VRAM, enable `gradient checkpointing`. It will slightly extend the computation time but reduce VRAM usage. In some cases, activating `gradient checkpointing` and increasing the batch size can shorten the computation time. In copy machine learning, increasing the batch size beyond 3 makes little difference, so it's better to keep it at 3 or less. The batch size is the number of images learned at once, but doubling the batch size doesn't mean you can halve the `iterations`. In one learning step, the weights are updated once, but doubling the batch size does not double the number of updates, nor does it double the efficiency of learning.
