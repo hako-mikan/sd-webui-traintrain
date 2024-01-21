@@ -344,11 +344,11 @@ class LoRANetwork(nn.Module):
             torch.save(state_dict, file)
 
     def __enter__(self):
-        for lora in self.unet_loras:
+        for lora in self.unet_loras + self.te_loras:
             lora.multiplier = 1.0
 
     def __exit__(self, exc_type, exc_value, tb):
-        for lora in self.unet_loras:
+        for lora in self.unet_loras + self.te_loras:
             lora.multiplier = 0
 
     def check_weight(self):
@@ -708,11 +708,11 @@ class LycorisNetwork(torch.nn.Module):
         return all_params
 
     def __enter__(self):
-        for lora in self.unet_loras:
+        for lora in self.unet_loras + self.te_loras:
             lora.multiplier = 1.0
 
     def __exit__(self, exc_type, exc_value, tb):
-        for lora in self.unet_loras:
+        for lora in self.unet_loras + self.te_loras:
             lora.multiplier = 0
 
     def prepare_grad_etc(self):
