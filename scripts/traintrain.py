@@ -89,7 +89,7 @@ train_lr_scheduler_num_cycles = ["train_lr_scheduler_num_cycles","TX",None,1,int
 train_lr_scheduler_power = ["train_lr_scheduler_power","TX",None, 1.0, float,ALL]
 train_snr_gamma = ["train_snr_gamma","TX",None,5,float,ALL]
 train_fixed_timsteps_in_batch = ["train_fixed_timsteps_in_batch","CH",None,False,bool,ALL]
-image_use_white_background_ajust = ["image_use_white_background_ajust","CH",None,False,bool,ALL]
+image_use_transparent_background_ajust = ["image_use_transparent_background_ajust","CH",None,False,bool,ALL]
 
 logging_verbose = ["logging_verbose","CH",None,False,bool,NDIFF2]
 logging_save_csv = ["logging_save_csv","CH",False,"",bool,NDIFF2]
@@ -117,7 +117,7 @@ row1 = [network_blocks]
 
 o_column1 = [network_conv_rank,network_conv_alpha,network_element,image_buckets_step,
                      image_min_length,image_max_ratio,sub_image_num,image_mirroring,
-                     image_use_filename_as_tag,image_disable_upscale,image_use_white_background_ajust,train_fixed_timsteps_in_batch]
+                     image_use_filename_as_tag,image_disable_upscale,image_use_transparent_background_ajust,train_fixed_timsteps_in_batch]
 o_column2 = [train_textencoder_learning_rate,train_seed,train_lr_step_rules, train_lr_warmup_steps, train_lr_scheduler_num_cycles,train_lr_scheduler_power, 
                      train_snr_gamma, save_per_steps]
 o_column3 = [train_model_precision, train_lora_precision,save_precision,diff_load_1st_pass, diff_save_1st_pass,diff_1st_pass_only,
