@@ -5,6 +5,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 import random
+import torch.nn.functional as F
 
 test = False
 
@@ -69,8 +70,9 @@ class LatentsConds(Dataset):
 
     def __getitem__(self, i):
         batch = {}
-        latent, cond1, cond2 = self.latents_conds[i]
+        latent, mask, cond1, cond2 = self.latents_conds[i]
         batch["latent"] = latent.squeeze()
+        batch["mask"] = mask.squeeze() if mask is not None else None
         batch["cond1"] = cond1 if isinstance(cond1, str) else cond1.squeeze() if cond1 is not None else None
 
         if self.isxl:
@@ -161,6 +163,10 @@ def find_filesets(t):
             if any(file.endswith(ext) for ext in TARGET_IMAGEFILES):
                 image_path = os.path.join(root, file)
 
+                filename = os.path.splitext(os.path.basename(image_path))[0]
+                filename = filename.split("_id_")[0]
+                filename = filename.replace("_", ",")  
+
                 # Check for corresponding text file
                 text_file = os.path.splitext(image_path)[0] + '.txt'
                 text_file = text_file if os.path.isfile(text_file) else None
@@ -168,18 +174,19 @@ def find_filesets(t):
                 # Check for corresponding caption file
                 caption_file = os.path.splitext(image_path)[0] + '.caption'
                 caption_file = caption_file if os.path.isfile(caption_file) else None
-                pathsets.append([image_path, text_file, caption_file])
+                pathsets.append([image_path, text_file, caption_file, filename])
 
     t.db("Images : ", len(pathsets))
-    t.db("Texts : " , sum(1 for _, text, _ in pathsets if text is not None))
-    t.db("Captions : " , sum(1 for _, text, _ in pathsets if text is not None))
+    t.db("Texts : " , sum(1 for _, text, _, _ in pathsets if text is not None))
+    t.db("Captions : " , sum(1 for _, _, caption, _ in pathsets if caption is not None))
 
     t.image_pathsets = pathsets
 
 def load_resize_image_and_text(t):
-    for img_path, txt_path, cap_path in t.image_pathsets:
+    for img_path, txt_path, cap_path, filename in t.image_pathsets:
         image = Image.open(img_path)
-        image = image.convert("RGB")
+        usealpha = image.mode == "RGBA"
+
         #max sizes
         ratio = image.width / image.height
         ar_errors = t.image_max_ratios - ratio
@@ -187,7 +194,11 @@ def load_resize_image_and_text(t):
         max = t.image_max_buckets_sizes[indice]
         ar_error = ar_errors[indice]
 
-        def resize_and_crop(ar_error, image, bucket_width, bucket_height):
+        def resize_and_crop(ar_error, image, bucket_width, bucket_height, disable_upscale):
+            if (ar_error > 0 and image.width < bucket_width or 
+                ar_error <= 0 and image.height < bucket_height) and disable_upscale:
+                return None
+
             if ar_error <= 0:  # 幅＜高さなら高さを合わせる
                 temp_width = int(image.width*bucket_height/image.height)
                 image = image.resize((temp_width, bucket_height))  # アスペクト比を変えずに高さだけbucketに合わせる
@@ -200,13 +211,35 @@ def load_resize_image_and_text(t):
                 upper = (temp_height - bucket_height) / 2
                 lower = bucket_height + upper
                 image = image.crop((0, upper, bucket_width, lower))
-            return image
 
-        resized = resize_and_crop(ar_error, image, *max)
-        t.image_buckets_raw[max].append([resized, load_text_files(txt_path), load_text_files(cap_path)])
-        if t.image_mirroring:
-            flipped = resized.transpose(Image.FLIP_LEFT_RIGHT)
-            t.image_buckets_raw[max].append([flipped, load_text_files(txt_path), load_text_files(cap_path)])
+            if usealpha:
+                tensor = torch.from_numpy(np.array(image)).permute(2, 0, 1).float() / 255.0
+                # アルファチャンネルの抽出
+                alpha_channel = tensor[3]
+                # 透明な部分を0、透明でない部分を1に設定
+                alpha_mask = (alpha_channel > 0.1).float()
+                # マスクのサイズを取得
+                H, W = alpha_mask.shape
+                # 新しいサイズを計算（縦横8分の1）
+                new_H, new_W = H // 8, W // 8
+                # マスクを縦横8分の1にリサイズ
+                mask = F.interpolate(alpha_mask.unsqueeze(0).unsqueeze(0), size=(new_H, new_W), mode='nearest')
+                mask = torch.cat([mask]*4)
+            else:
+                mask = None
+
+            image = image.convert("RGB")
+
+            return image, mask
+
+        resized, alpha_mask = resize_and_crop(ar_error, image, *max, t.image_disable_upscale)
+        if resized is not None:
+            t.image_buckets_raw[max].append([resized, alpha_mask, load_text_files(txt_path), load_text_files(cap_path), filename])
+            if t.image_mirroring:
+                flipped = resized.transpose(Image.FLIP_LEFT_RIGHT)
+                if alpha_mask is not None:
+                    flipped_mask = torch.flip(alpha_mask, [1])  # 幅に対応する次元（ここでは1）で反転
+                t.image_buckets_raw[max].append([flipped, flipped_mask, load_text_files(txt_path), load_text_files(cap_path), filename])
 
         ar_errors = t.image_sub_ratios - ratio
 
@@ -215,11 +248,14 @@ def load_resize_image_and_text(t):
                 indice = np.argmin(np.abs(ar_errors))  # 一番近いアスペクト比のインデックス
                 sub = t.image_sub_buckets_sizes[indice]
                 ar_error = ar_errors[indice]
-                resized = resize_and_crop(ar_error, image, *sub)
-                t.image_buckets_raw[sub].append([resized, load_text_files(txt_path), load_text_files(cap_path)])
-                if t.image_mirroring:
-                    flipped = resized.transpose(Image.FLIP_LEFT_RIGHT)
-                    t.image_buckets_raw[sub].append([flipped, load_text_files(txt_path), load_text_files(cap_path)])
+                resized, alpha_mask  = resize_and_crop(ar_error, image, *sub, t.image_disable_upscale)
+                if resized is not None:
+                    t.image_buckets_raw[sub].append([resized, alpha_mask, load_text_files(txt_path), load_text_files(cap_path), filename])
+                    if t.image_mirroring:
+                        flipped = resized.transpose(Image.FLIP_LEFT_RIGHT)
+                        if alpha_mask is not None:
+                            flipped_mask = torch.flip(alpha_mask, [1])  # 幅に対応する次元（ここでは1）で反転
+                        t.image_buckets_raw[sub].append([flipped, flipped_mask, load_text_files(txt_path), load_text_files(cap_path), filename])
                 
                 ar_errors[indice] = ar_errors[indice] + 1
         except:
@@ -240,19 +276,21 @@ def encode_image_text(t):
         emp1, emp2 = t.text_model.encode_text(t.lora_trigger_word)
         bar = tqdm(total = t.total_images)
         for key in t.image_buckets_raw:
-            for image, text, caption in t.image_buckets_raw[key]:
+            for image, mask, text, caption, filename in t.image_buckets_raw[key]:
                 latent = t.image2latent(t,image)
-                if text is not None:
-                    prompt = t.lora_trigger_word  +", " + text
+                if t.image_use_filename_as_tag:
+                    prompt = t.lora_trigger_word + "," + filename
+                elif text is not None:
+                    prompt = t.lora_trigger_word + ", " + text
                 elif caption is not None:
-                    prompt = t.lora_trigger_word +", " + caption
+                    prompt = t.lora_trigger_word + ", " + caption
                 else:
                     prompt = t.lora_trigger_word
                 if "BASE" not in t.network_blocks:
                     emb1, emb2 = (emp1, emp2) if prompt is None else t.text_model.encode_text(prompt)
                 else:
                     emb1 = emb2 = prompt
-                t.image_buckets[key].append([latent, emb1, emb2])
+                t.image_buckets[key].append([latent, mask, emb1, emb2])
                 bar.update(1)
 
 def save_images(t,key,images):
