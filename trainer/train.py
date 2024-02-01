@@ -164,7 +164,6 @@ def train_main(jsononly, mode, modelname, vaename, *args):
 
     t.noise_scheduler = trainer.load_noise_scheduler("ddpm", t.model_v_pred)
 
-    t.optimizer_module = trainer.get_optimizer(t.train_optimizer)
     t.a = trainer.make_accelerator(t)
     
     t.unet = t.a.prepare(t.unet)
@@ -255,6 +254,9 @@ def train_lora(t):
 
                     conds1.to(CUDA, dtype=t.train_lora_precision) 
                     noise_pred = t.unet(noisy_latents, timesteps, conds1, added_cond_kwargs = added_cond_kwargs).sample
+
+                if t.image_use_white_background_ajust and batch["mask"] is not None:
+                    noise_pred = noise_pred * batch["mask"].to(CUDA) + noise * (1 - batch["mask"].to(CUDA))
 
                 loss, loss_ema, loss_velocity = process_loss(t, noise_pred, noise, timesteps, loss_ema, loss_velocity)
 
@@ -361,7 +363,7 @@ def train_diff(t):
 
     orig_network.eval()
     orig_network.requires_grad_(False)
-    makesavelist(t)
+
     
     if t.diff_1st_pass_only:
         return result
@@ -373,6 +375,7 @@ def train_diff(t):
     t.a = trainer.make_accelerator(t)
     if 0 > t.train_seed: t.train_seed = random.randint(0, 2**32)
     set_seed(t.train_seed)
+    makesavelist(t)
 
     t.targ_latent = t.targ_latent.repeat_interleave(t.train_batch_size,0)
     t.image_size = [*t.targ_latent.shape[2:4]]
@@ -439,6 +442,7 @@ def flush():
 
 def create_network(t):
     network = load_network(t)
+    t.optimizer_module = trainer.get_optimizer(t.train_optimizer)
     optimizer = t.optimizer_module(network.prepare_optimizer_params(),lr=t.train_learning_rate if t.train_optimizer != "adafactor" else None)
     lr_scheduler = load_lr_scheduler(t, optimizer)
 
