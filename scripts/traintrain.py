@@ -1,7 +1,11 @@
+from cProfile import label
 import os
 import pandas as pd
 import matplotlib.pyplot as plt
 import gradio as gr
+from PIL import Image, ImageChops
+import random
+import numpy as np
 from modules import scripts, script_callbacks, sd_models, sd_vae
 from modules.shared import opts
 from modules.ui import create_output_panel, create_refresh_button
@@ -69,7 +73,8 @@ image_min_length = ["image_min_length", "TX",None,512,int,LORA]
 image_max_ratio = ["image_max_ratio", "TX",None,2,float,LORA]
 sub_image_num = ["sub_image_num", "TX",None,0,int,LORA]
 image_mirroring =  ["image_mirroring", "CH",None,False,bool,LORA]
-
+image_use_filename_as_tag =  ["image_use_filename_as_tag", "CH",None,False,bool,LORA]
+image_disable_upscale = ["image_disable_upscale", "CH",None,False,bool,LORA]
 save_per_steps = ["save_per_steps", "TX",None,0,int,ALL]
 save_precision = ["save_precision","DD",PRECISION_TYPES[:3],"fp16",str,ALL]
 save_overwrite = ["save_overwrite", "CH",None,False,bool,ALL]
@@ -84,7 +89,7 @@ train_lr_scheduler_num_cycles = ["train_lr_scheduler_num_cycles","TX",None,1,int
 train_lr_scheduler_power = ["train_lr_scheduler_power","TX",None, 1.0, float,ALL]
 train_snr_gamma = ["train_snr_gamma","TX",None,5,float,ALL]
 train_fixed_timsteps_in_batch = ["train_fixed_timsteps_in_batch","CH",None,False,bool,ALL]
-
+image_use_white_background_ajust = ["image_use_white_background_ajust","CH",None,False,bool,ALL]
 
 logging_verbose = ["logging_verbose","CH",None,False,bool,NDIFF2]
 logging_save_csv = ["logging_save_csv","CH",False,"",bool,NDIFF2]
@@ -111,7 +116,8 @@ r_column3 = [train_optimizer,train_lr_scheduler, save_lora_name,use_gradient_che
 row1 = [network_blocks]
 
 o_column1 = [network_conv_rank,network_conv_alpha,network_element,image_buckets_step,
-                     image_min_length,image_max_ratio,sub_image_num,image_mirroring,train_fixed_timsteps_in_batch]
+                     image_min_length,image_max_ratio,sub_image_num,image_mirroring,
+                     image_use_filename_as_tag,image_disable_upscale,image_use_white_background_ajust,train_fixed_timsteps_in_batch]
 o_column2 = [train_textencoder_learning_rate,train_seed,train_lr_step_rules, train_lr_warmup_steps, train_lr_scheduler_num_cycles,train_lr_scheduler_power, 
                      train_snr_gamma, save_per_steps]
 o_column3 = [train_model_precision, train_lora_precision,save_precision,diff_load_1st_pass, diff_save_1st_pass,diff_1st_pass_only,
@@ -301,6 +307,33 @@ def on_ui_tabs():
             with gr.Row():
                 plot = gr.Plot()
 
+        with gr.Tab("Image"):
+            gr.HTML(value="Rotate random angle and scaling")
+            image_result = gr.Textbox(label="Message")
+            with gr.Row():
+                with gr.Column(variant="compact"):
+                    angle_bg= gr.Button(value="From Directory",elem_classes=["compact_button"],variant='primary')
+                with gr.Column(variant="compact"):
+                    angle_bg_i= gr.Button(value="From File",elem_classes=["compact_button"],variant='primary')
+                with gr.Column(variant="compact"):
+                    fix_side = gr.Radio(label="fix side", value= "none", choices =["none", "right", "left", "top", "bottom"] )
+            with gr.Row():
+                with gr.Column(variant="compact"):  
+                    image_dir = gr.Textbox(label="Image directory")
+                with gr.Column(variant="compact"):
+                    output_name = gr.Textbox(label="Output name")
+                with gr.Column(variant="compact"):
+                    save_dir = gr.Textbox(label="Output directory")                   
+            with gr.Row():
+                num_of_images = gr.Slider(label="number of images", maximum=1000, minimum=0, step=1, value=5)
+                max_tilting_angle = gr.Slider(label="max_tilting_angle", maximum=180, minimum=0, step=1, value=180)
+                min_scale = gr.Slider(label="minimun downscale ratio", maximum=1, minimum=0, step=0.01, value=0.4)
+            with gr.Row():
+                change_angle = gr.Checkbox(label="change angle", value= False)
+                change_scale = gr.Checkbox(label="change scale", value= False)
+
+            input_image = gr.Image(label="Input Image", interactive=True, type="pil", image_mode="RGBA")
+
         dtrue = gr.Checkbox(value = True, visible= False)
         dfalse = gr.Checkbox(value = False, visible= False)
 
@@ -310,6 +343,9 @@ def on_ui_tabs():
         def savepreset_f(*args):
             train.train(*args)
             return gr.update(choices=load_preset(None))
+
+        angle_bg.click(change_angle_bg,[dtrue, image_dir, save_dir, input_image,output_name, num_of_images ,change_angle,max_tilting_angle, change_scale, min_scale, fix_side], [image_result])
+        angle_bg_i.click(change_angle_bg,[dfalse, image_dir, save_dir, input_image,output_name, num_of_images ,change_angle,max_tilting_angle, change_scale, min_scale, fix_side], [image_result])
 
         start.click(train.train, [dfalse, mode, model, vae, *train_settings_1, *train_settings_2, *prompts, *in_images],[result])
         queue.click(train.queue, [dfalse, mode, model, vae, *train_settings_1, *train_settings_2, *prompts, *in_images],[result])
@@ -401,6 +437,94 @@ def plot_csv(csv_path):
     plt.grid(True)
 
     return plt.gcf()
+
+
+# ここに必要な追加の関数を定義します。
+def downscale_image(image, min_scale, fix_side=None):
+    import random
+    from PIL import Image
+
+    scale = random.uniform(min_scale, 1)
+    original_size = image.size
+    new_size = (int(original_size[0] * scale), int(original_size[1] * scale))
+    downscaled_image = image.resize(new_size, Image.ANTIALIAS)
+    new_image = Image.new("RGBA", original_size, (0, 0, 0, 0))
+
+    # 配置位置を決定する
+    if fix_side == "right":
+        x_position = original_size[0] - new_size[0]
+        y_position = random.randint(0, original_size[1] - new_size[1])
+    elif fix_side == "top":
+        x_position = random.randint(0, original_size[0] - new_size[0])
+        y_position = 0
+    elif fix_side == "left":
+        x_position = 0
+        y_position = random.randint(0, original_size[1] - new_size[1])
+    elif fix_side == "bottom":
+        x_position = random.randint(0, original_size[0] - new_size[0])
+        y_position = original_size[1] - new_size[1]
+    else:
+        # fix_sideがNoneまたは無効な値の場合、ランダムな位置に配置
+        x_position = random.randint(0, original_size[0] - new_size[0])
+        y_position = random.randint(0, original_size[1] - new_size[1])
+
+    new_image.paste(downscaled_image, (x_position, y_position))
+    return new_image
+
+
+MARGIN = 5
+
+def marginer(bbox, image):
+    return (
+        max(bbox[0] - MARGIN, 0),  # 左
+        max(bbox[1] - MARGIN, 0),  # 上
+        min(bbox[2] + MARGIN, image.width),  # 右
+        min(bbox[3] + MARGIN, image.height)  # 下
+    )
+
+
+def change_angle_bg(from_dir, image_dir, save_dir, input_image, output_name, num_of_images ,
+                                change_angle, max_tilting_angle, change_scale, min_scale, fix_side):
+
+    if from_dir:
+        image_files = [file for file in os.listdir(image_dir) if file.endswith((".png", ".jpg", ".jpeg"))]
+    else:
+        image_files = [input_image]
+
+    for file in image_files:
+        if isinstance(file, str):
+            modified_folder_path = os.path.join(image_dir, "modified")
+            os.makedirs(modified_folder_path, exist_ok=True)
+
+            path = os.path.join(image_dir, file)
+            name, extention = os.path.splitext(file)
+            with Image.open(path) as img:
+                img = img.convert("RGBA")
+        else:
+            modified_folder_path = save_dir
+            os.makedirs(modified_folder_path, exist_ok=True)
+
+            img = file
+            name = output_name
+            extention = "png"
+
+        for i in range(num_of_images):
+            modified_img = img
+
+            #画像を回転
+            if change_angle:
+                angle = random.uniform(-max_tilting_angle, max_tilting_angle)
+                modified_img = modified_img.rotate(angle, expand=True)
+
+            if change_scale:
+                modified_img = downscale_image(modified_img, min_scale, fix_side)
+
+            # 変更した画像を保存
+            save_path = os.path.join(modified_folder_path, f"{name}_id_{i}.{extention}")
+            modified_img.save(save_path)
+
+    return f"Images saved in {modified_folder_path}"
+
 
 BLOCKID=["BASE","IN00","IN01","IN02","IN03","IN04","IN05","IN06","IN07","IN08","IN09","IN10","IN11","M00","OUT00","OUT01","OUT02","OUT03","OUT04","OUT05","OUT06","OUT07","OUT08","OUT09","OUT10","OUT11","Not Merge"]
 BLOCKIDXL=['BASE', 'IN0', 'IN1', 'IN2', 'IN3', 'IN4', 'IN5', 'IN6', 'IN7', 'IN8', 'M', 'OUT0', 'OUT1', 'OUT2', 'OUT3', 'OUT4', 'OUT5', 'OUT6', 'OUT7', 'OUT8', 'VAE']
