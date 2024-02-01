@@ -255,7 +255,7 @@ def train_lora(t):
                     conds1.to(CUDA, dtype=t.train_lora_precision) 
                     noise_pred = t.unet(noisy_latents, timesteps, conds1, added_cond_kwargs = added_cond_kwargs).sample
 
-                if t.image_use_white_background_ajust and batch["mask"] is not None:
+                if t.image_use_transparent_background_ajust and batch["mask"] is not None:
                     noise_pred = noise_pred * batch["mask"].to(CUDA) + noise * (1 - batch["mask"].to(CUDA))
 
                 loss, loss_ema, loss_velocity = process_loss(t, noise_pred, noise, timesteps, loss_ema, loss_velocity)
