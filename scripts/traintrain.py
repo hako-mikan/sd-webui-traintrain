@@ -281,9 +281,11 @@ def on_ui_tabs():
                     button_b_gen = gr.Button(value="Generate All",elem_classes=["compact_button"],variant='primary')
                 with gr.Row():
                     with gr.Column():
-                        imagegal_orig = [x for x in create_output_panel("txt2img", opts.outdir_txt2img_samples)]
+                        o_g =  create_output_panel("txt2img", opts.outdir_txt2img_samples)
+                        imagegal_orig = [x for x in o_g] if isinstance(o_g, tuple) else [o_g.gallery, o_g.generation_info, o_g.infotext, o_g.html_log]
                     with gr.Column():
-                        imagegal_targ = [x for x in create_output_panel("txt2img", opts.outdir_txt2img_samples)]
+                        t_g =  create_output_panel("txt2img", opts.outdir_txt2img_samples)
+                        imagegal_targ = [x for x in t_g] if isinstance(t_g, tuple) else [t_g.gallery, t_g.generation_info, t_g.infotext, t_g.html_log]
 
             with gr.Group(visible=False) as g_diff:
                 with gr.Row():
