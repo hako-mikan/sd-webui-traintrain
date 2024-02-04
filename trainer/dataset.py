@@ -72,11 +72,12 @@ class LatentsConds(Dataset):
         batch = {}
         latent, mask, cond1, cond2 = self.latents_conds[i]
         batch["latent"] = latent.squeeze()
-        batch["mask"] = mask.squeeze() if mask is not None else None
         batch["cond1"] = cond1 if isinstance(cond1, str) else cond1.squeeze() if cond1 is not None else None
 
         if self.isxl:
             batch["cond2"] = cond2 if isinstance(cond2, str) else cond2.squeeze() if cond2 is not None else None
+        if mask is not None:
+            batch["mask"] = mask.squeeze() 
 
         return batch
 
@@ -237,8 +238,7 @@ def load_resize_image_and_text(t):
             t.image_buckets_raw[max].append([resized, alpha_mask, load_text_files(txt_path), load_text_files(cap_path), filename])
             if t.image_mirroring:
                 flipped = resized.transpose(Image.FLIP_LEFT_RIGHT)
-                if alpha_mask is not None:
-                    flipped_mask = torch.flip(alpha_mask, [1])  # 幅に対応する次元（ここでは1）で反転
+                flipped_mask = torch.flip(alpha_mask, [1]) if alpha_mask is not None else None
                 t.image_buckets_raw[max].append([flipped, flipped_mask, load_text_files(txt_path), load_text_files(cap_path), filename])
 
         ar_errors = t.image_sub_ratios - ratio
@@ -253,8 +253,7 @@ def load_resize_image_and_text(t):
                     t.image_buckets_raw[sub].append([resized, alpha_mask, load_text_files(txt_path), load_text_files(cap_path), filename])
                     if t.image_mirroring:
                         flipped = resized.transpose(Image.FLIP_LEFT_RIGHT)
-                        if alpha_mask is not None:
-                            flipped_mask = torch.flip(alpha_mask, [1])  # 幅に対応する次元（ここでは1）で反転
+                        flipped_mask = torch.flip(alpha_mask, [1]) if alpha_mask is not None else None
                         t.image_buckets_raw[sub].append([flipped, flipped_mask, load_text_files(txt_path), load_text_files(cap_path), filename])
                 
                 ar_errors[indice] = ar_errors[indice] + 1
