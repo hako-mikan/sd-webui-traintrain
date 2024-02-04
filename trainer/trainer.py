@@ -81,9 +81,9 @@ class Trainer():
 
     def setpass(self, pas, set = True):
         values_0 = self.values[:len(all_configs)]
-        values_1 = self.values[len(all_configs):]
+        values_1 = self.values[len(all_configs):len(all_configs) * 2]
         if pas == 1:
-            if values_1[0]:
+            if values_1[-1]:
                 if set: print("Use 2nd pass settings")
             else:
                 return
