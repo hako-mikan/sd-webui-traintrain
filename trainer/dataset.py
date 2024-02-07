@@ -225,9 +225,14 @@ def load_resize_image_and_text(t):
                 new_H, new_W = H // 8, W // 8
                 # マスクを縦横8分の1にリサイズ
                 mask = F.interpolate(alpha_mask.unsqueeze(0).unsqueeze(0), size=(new_H, new_W), mode='nearest')
-                mask = torch.cat([mask]*4)
+                mask = torch.cat([mask]*4, dim=1)
             else:
-                mask = None
+                # アルファチャンネルがない場合の画像サイズの取得
+                tensor = torch.from_numpy(np.array(image)).permute(2, 0, 1).float() / 255.0
+                _, H, W = tensor.shape  # アルファチャンネルがない場合のためにRGBチャンネルを無視
+                new_H, new_W = H // 8, W // 8  # 新しいサイズを計算（縦横8分の1）
+                # すべて1のテンソルを作成
+                mask = torch.ones((1, 4, new_H, new_W))
 
             image = image.convert("RGB")
 
