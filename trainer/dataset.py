@@ -285,6 +285,7 @@ def encode_image_text(t):
                     prompt = t.lora_trigger_word + ", " + caption
                 else:
                     prompt = t.lora_trigger_word
+                t.tagcount(prompt)
                 if "BASE" not in t.network_blocks:
                     emb1, emb2 = (emp1, emp2) if prompt is None else t.text_model.encode_text(prompt)
                 else:
