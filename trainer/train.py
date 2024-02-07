@@ -4,6 +4,7 @@ import random
 import time
 import numpy
 import gc
+import json
 from PIL import Image
 import traceback
 import torch
@@ -17,9 +18,16 @@ from accelerate.utils import set_seed
 from diffusers.models import AutoencoderKL
 from transformers.optimization import AdafactorSchedule
 
+
 MAX_DENOISING_STEPS = 1000
 ML = "LoRA"
 MD = "Difference"
+
+try:
+    from ldm_patched.modules import model_management
+    forge = True
+except:
+    forge = False
 
 jsonspath = trainer.jsonspath
 logspath = trainer.logspath
@@ -110,8 +118,6 @@ def train_main(jsononly, mode, modelname, vaename, *args):
     model_ver = "sd_v2" if t.isv2 else model_ver
     t.model_version = "sd_v1" if model_ver is None else model_ver
 
-    metadator(t)
-
     checkpoint_filename = shared.sd_model.sd_checkpoint_info.filename
 
     if t.mode != ML:
@@ -121,7 +127,15 @@ def train_main(jsononly, mode, modelname, vaename, *args):
 
     print("Preparing the Model...")
 
-    sd_models.unload_model_weights()
+    if forge:
+        sd_models.model_data.sd_model = None
+        sd_models.model_data.loaded_sd_models = []
+        model_management.unload_all_models()
+        model_management.soft_empty_cache()
+        gc.collect()
+    else:
+        sd_models.unload_model_weights()
+
     lowvram.module_in_gpu = None #web-uiのバグ対策
 
     vae_path = sd_vae.vae_dict.get(vaename, None)
@@ -489,6 +503,8 @@ def finisher(network, t, i, copy = False):
         return "Stopped" + result
 
 def savecount(network, t, i, copy = False):
+    if t.metadata == {}:
+       metadator(t)
     if copy and not t.diff_save_1st_pass:
         return "Not save copy"
     add = "_copy" if copy else ""
@@ -631,4 +647,5 @@ def metadator(t):
         "ss_seed": t.train_seed,
         "ss_optimizer": t.train_optimizer,
         "ss_min_snr_gamma": t.train_snr_gamma,
+        "ss_tag_frequency": json.dumps({1:t.count_dict})
     }
