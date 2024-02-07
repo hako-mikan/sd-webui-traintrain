@@ -49,6 +49,8 @@ class Trainer():
         self.values = values
         self.mode = mode
         self.use_8bit = False
+        self.count_dict = {}
+        self.metadata = {}
 
         self.save_dir = shared.cmd_opts.lora_dir
         self.setpass(0)
@@ -159,6 +161,16 @@ class Trainer():
         filename = os.path.join(self.save_dir, f"{self.save_lora_name}.safetensors")
 
         self.isfile = os.path.isfile(filename) and not self.save_overwrite
+    
+    def tagcount(self, prompt):
+        tags = [p.strip() for p in prompt.split(",")]
+
+        for tag in tags:
+            if tag in self.count_dict:
+                self.count_dict[tag] += 1
+            else:
+                self.count_dict[tag] = 1
+
 
 def import_json(name, preset = False):
     def find_files(file_name):
