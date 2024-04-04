@@ -3,19 +3,12 @@ import os
 import subprocess
 
 requirements = [
-"scipy",
 "diffusers==0.20.0",
 "safetensors",
-"pyyaml",
-"pydantic",
 "dadaptation",
-"lion-pytorch",
 "prodigyopt",
 "wandb",
-"omegaconf",
-"invisible-watermark==0.2.0",
 "lycoris_lora",
-"toml",
 "pandas",
 "matplotlib"
 ]
