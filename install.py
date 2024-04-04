@@ -21,8 +21,8 @@ try:
     from ldm_patched.modules import model_management
 except:
     if os.name == 'nt':
-        package_url = "https://github.com/Keith-Hon/bitsandbytes-windows.git"
-        package_name = "bitsandbytes" 
+        package_url = "bitsandbytes>=0.43.0"
+        package_name = "bitsandbytes>=0.43.0" 
     else:
         package_url = "bitsandbytes"
         package_name = "bitsandbytes"
