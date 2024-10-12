@@ -629,7 +629,7 @@ class GenParamGetter(scripts.Script):
                 if _is_txt2img:
                     txt2img_params = params[0].inputs 
                 else:
-                    img2img_params = params[0].input
+                    img2img_params = params[0].inputs
 
             # from pprint import pprint
             # pprint(paramsnames)
