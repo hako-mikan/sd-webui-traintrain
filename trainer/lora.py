@@ -338,10 +338,24 @@ class LoRANetwork(nn.Module):
             if not key.startswith("lora"):
                 del state_dict[key]
 
-        if os.path.splitext(file)[1] == ".safetensors":
-            save_file(state_dict, file, metadata)
-        else:
-            torch.save(state_dict, file)
+        base, ext = os.path.splitext(file)
+        attempt = 0
+        while True:
+            try:
+                if ext == ".safetensors":
+                    save_file(state_dict, file, metadata)  # safetensors用の保存処理
+                else:
+                    torch.save(state_dict, file)  # 通常のtorch.saveで保存
+                print(f"Successfully saved to {file}")
+                break  # 保存が成功したらループを抜ける
+            except Exception as e:
+                print(f"Error saving to {file}: {e}")
+                attempt += 1
+                file = f"{base}_{attempt}{ext}"  # ファイル名を変更
+                print(f"Retrying with filename {file}...")
+        
+        return file
+
 
     def __enter__(self):
         for lora in self.unet_loras + self.te_loras:
