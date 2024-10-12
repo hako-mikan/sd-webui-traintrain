@@ -1,5 +1,6 @@
 from cProfile import label
 import os
+from functools import wraps
 import pandas as pd
 import matplotlib.pyplot as plt
 import gradio as gr
@@ -10,6 +11,7 @@ from modules import scripts, script_callbacks, sd_models, sd_vae
 from modules.shared import opts
 from modules.ui import create_output_panel, create_refresh_button
 from trainer import train, trainer, gen
+from packaging import version
 
 jsonspath = trainer.jsonspath
 logspath = trainer.logspath
@@ -157,16 +159,27 @@ prompts = None
 imagegal_orig = None
 imagegal_targ = None
 
-class ToolButton(gr.Button, gr.components.FormComponent):
+IS_GRADIO_4 = version.parse(gr.__version__) >= version.parse("4.0.0")
+
+class FormComponent:
+    webui_do_not_create_gradio_pyi_thank_you = True
+
+    def get_expected_parent(self):
+        return gr.components.Form
+
+class ToolButton(gr.Button, FormComponent):
     """Small button with single emoji as text, fits inside gradio forms"""
 
-    def __init__(self, **kwargs):
-        super().__init__(variant="tool",
-                         elem_classes=kwargs.pop('elem_classes', []),
-                         **kwargs)
+    @wraps(gr.Button.__init__)
+    def __init__(self, value="", *args, elem_classes=None, **kwargs):
+        elem_classes = elem_classes or []
+        super().__init__(*args, elem_classes=["tool", *elem_classes], value=value, **kwargs)
 
     def get_block_name(self):
         return "button"
+
+if IS_GRADIO_4:
+    ToolButton.__module__ = "modules.ui_components"
 
 def on_ui_tabs():
     global imagegal_orig, imagegal_targ, prompts, result
@@ -585,37 +598,42 @@ class GenParamGetter(scripts.Script):
     def get_params_components(demo: gr.Blocks, app):
         global paramsnames, txt2img_params, img2img_params
         for _id, _is_txt2img in zip([GenParamGetter.txt2img_gen_button._id, GenParamGetter.img2img_gen_button._id], [True, False]):
-            dependencies: list[dict] = [x for x in demo.dependencies if x["trigger"] == "click" and _id in x["targets"]]
-            dependency: dict = None
-            cnet_dependency: dict = None
-            UiControlNetUnit = None
-            for d in dependencies:
-                if len(d["outputs"]) == 1:
-                    outputs = GenParamGetter.get_components_by_ids(demo, d["outputs"])
-                    output = outputs[0]
-                    if (
-                        isinstance(output, gr.State)
-                        and type(output.value).__name__ == "UiControlNetUnit"
-                    ):
-                        cnet_dependency = d
-                        UiControlNetUnit = type(output.value)
-
-                elif len(d["outputs"]) == 4:
-                    dependency = d
-
-            params = [params for params in demo.fns if GenParamGetter.compare_components_with_ids(params.inputs, dependency["inputs"])]
-
-            from pprint import pprint
-
-            if _is_txt2img:
-                gen.paramsnames = [x.label if hasattr(x,"label") else "None" for x in params[0].inputs]
-
-            if _is_txt2img:
-                txt2img_params = params[0].inputs 
+            if hasattr(demo,"dependencies"):
+                dependencies: list[dict] = [x for x in demo.dependencies if x["trigger"] == "click" and _id in x["targets"]]
+                g4 = False
             else:
-                img2img_params = params[0].inputs
+                dependencies: list[dict] = [x for x in demo.config["dependencies"] if x["targets"][0][1] == "click" and _id in x["targets"][0]]
+                g4 = True
+            
+            dependency: dict = None
 
-            #pprint(paramsnames)
+            for d in dependencies:
+                if len(d["outputs"]) == 4:
+                    dependency = d
+            
+            if g4:
+                params = [demo.blocks[x] for x in dependency['inputs']]
+                if _is_txt2img:
+                    paramsnames = [x.label if hasattr(x,"label") else "None" for x in params]
+
+                if _is_txt2img:
+                    txt2img_params = params
+                else:
+                    img2img_params = params
+            else:
+                params = [params for params in demo.fns if GenParamGetter.compare_components_with_ids(params.inputs, dependency["inputs"])]
+
+                if _is_txt2img:
+                    paramsnames = [x.label if hasattr(x,"label") else "None" for x in params[0].inputs]
+
+                if _is_txt2img:
+                    txt2img_params = params[0].inputs 
+                else:
+                    img2img_params = params[0].input
+
+            # from pprint import pprint
+            # pprint(paramsnames)
+
         if not GenParamGetter.events_assigned:
             with demo:
                 button_o_gen.click(
