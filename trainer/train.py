@@ -17,6 +17,7 @@ from pprint import pprint
 from accelerate.utils import set_seed
 from diffusers.models import AutoencoderKL
 from transformers.optimization import AdafactorSchedule
+import networks
 
 
 MAX_DENOISING_STEPS = 1000
@@ -24,7 +25,9 @@ ML = "LoRA"
 MD = "Difference"
 
 try:
-    from ldm_patched.modules import model_management
+    from modules.sd_models import forge_model_reload, model_data, FakeInitialModel
+    from modules_forge.main_entry import forge_unet_storage_dtype_options
+    from backend.memory_management import free_memory
     forge = True
 except:
     forge = False
@@ -103,11 +106,23 @@ def train_main(jsononly, mode, modelname, vaename, *args):
 
     print(" Start Training!")
 
-    currentinfo = shared.sd_model.sd_checkpoint_info
+    currentinfo = shared.sd_model.sd_checkpoint_info if hasattr(shared.sd_model, "sd_checkpoint_info") else None
+
     checkpoint_info = sd_models.get_closet_checkpoint_match(modelname)
-    
+
     lowvram.module_in_gpu = None #web-uiのバグ対策
-    sd_models.load_model(checkpoint_info)
+    
+    if forge:
+        unet_storage_dtype, _ = forge_unet_storage_dtype_options.get(shared.opts.forge_unet_storage_dtype, (None, False))
+        forge_model_params = dict(
+            checkpoint_info=checkpoint_info,
+            additional_modules=shared.opts.forge_additional_modules,
+            unet_storage_dtype=unet_storage_dtype
+        )
+        model_data.forge_loading_parameters = forge_model_params
+        forge_model_reload()
+    else:
+        sd_models.load_model(checkpoint_info)
 
     t.isxl = shared.sd_model.is_sdxl
     t.isv2 = shared.sd_model.is_sd2
@@ -130,8 +145,7 @@ def train_main(jsononly, mode, modelname, vaename, *args):
     if forge:
         sd_models.model_data.sd_model = None
         sd_models.model_data.loaded_sd_models = []
-        model_management.unload_all_models()
-        model_management.soft_empty_cache()
+        free_memory(0,CUDA, free_all = True)
         gc.collect()
     else:
         sd_models.unload_model_weights()
@@ -210,11 +224,17 @@ def train_main(jsononly, mode, modelname, vaename, *args):
     flush()
 
     try:
-        sd_models.load_model(currentinfo)
+        if forge:
+            forge_model_params["checkpoint_info"] = currentinfo if currentinfo else checkpoint_info
+            model_data.forge_loading_parameters = forge_model_params
+            model_data.forge_hash = None
+            forge_model_reload()
+        else:
+            sd_models.load_model(currentinfo)
     except:
         lowvram.module_in_gpu = None #web-uiのバグ対策
 
-    sd_models.model_data.loaded_sd_models = [] #web-uiのバグ対策
+    if not forge: sd_models.model_data.loaded_sd_models = [] #web-uiのバグ対策
 
     return result
 
@@ -512,7 +532,7 @@ def savecount(network, t, i, copy = False):
     filename = os.path.join(t.save_dir, f"{t.save_lora_name}{add}.safetensors")
     print(f" Saving to {filename}")
     metaname = f"{t.save_lora_name}{add}"
-    network.save_weights(filename, t, metaname)
+    filename = network.save_weights(filename, t, metaname)
     return f"Successfully created to {filename}"
 
 def makesavelist(t):
