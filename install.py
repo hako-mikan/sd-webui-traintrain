@@ -3,7 +3,7 @@ import os
 import subprocess
 
 requirements = [
-"diffusers==0.25.0",
+"diffusers",
 "safetensors",
 "dadaptation",
 "prodigyopt",
