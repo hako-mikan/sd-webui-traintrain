@@ -121,8 +121,11 @@ def train_main(jsononly, mode, modelname, vaename, *args):
         )
         model_data.forge_loading_parameters = forge_model_params
         forge_model_reload()
+        print(dir(shared.sd_model.forge_objects.vae.first_stage_model))
+        vae = shared.sd_model.forge_objects.vae.first_stage_model
     else:
         sd_models.load_model(checkpoint_info)
+        vae = None
 
     t.isxl = shared.sd_model.is_sdxl
     t.isv2 = shared.sd_model.is_sd2
@@ -153,7 +156,8 @@ def train_main(jsononly, mode, modelname, vaename, *args):
     lowvram.module_in_gpu = None #web-uiのバグ対策
 
     vae_path = sd_vae.vae_dict.get(vaename, None)
-    vae = AutoencoderKL.from_single_file(vae_path) if vae_path is not None else None
+    if not vae:
+        vae = AutoencoderKL.from_single_file(vae_path) if vae_path is not None else None
 
     if t.isxl: 
         text_model, unet, vae = trainer.load_checkpoint_model_xl(checkpoint_filename, t, vae = vae)
@@ -581,8 +585,12 @@ def image2latent(t,image):
     image = image * 2 - 1
     image = image.to(CUDA,dtype=t.train_model_precision)
     with torch.no_grad():
-        latent = t.vae.encode(image).latent_dist.sample() * t.vae_scale_factor
-    return latent
+        latent = t.vae.encode(image) 
+        if isinstance(latent, torch.Tensor):
+            return latent * t.vae_scale_factor
+        else:
+            return latent.latent_dist.sample() * t.vae_scale_factor
+
 
 def text2cond(t, prompt):
     input = SdConditioning([prompt], width=t.image_size[0], height=t.image_size[1])
