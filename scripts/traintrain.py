@@ -29,7 +29,13 @@ NETWORK_TYPES = ["lierla", "c3lier","loha"]
 NETWORK_DIMS = [str(2**x) for x in range(10)]
 NETWORK_ELEMENTS = ["Full", "CrossAttention", "SelfAttention"]
 IMAGESTEPS = [str(x*64) for x in range(10)]
-OPTIMIZERS = ["adamw", "adamw8bit","adafactor","lion", "prodigy", "dadaptadam","dadaptlion","adam8bit","adam",]
+SEP = "--------------------------"
+OPTIMIZERS = ["AdamW", "AdamW8bit", "AdaFactor", "Lion", "Prodigy", SEP,
+              "DadaptAdam","DadaptLion", "DAdaptAdaGrad", "DAdaptAdan", "DAdaptSGD",SEP,
+               "Adam8bit", "SGDNesterov8bit", "Lion8bit", "PagedAdamW8bit", "PagedLion8bit",  SEP, 
+               "RAdamScheduleFree", "AdamWScheduleFree", "SGDScheduleFree", SEP, 
+               "CAME", "Tiger", "AdamMini",
+               "PagedAdamW", "PagedAdamW32bit", "SGDNesterov", "Adam",]
 LOSS_REDUCTIONS = ["none", "mean"]
 
 SCHEDULERS = ["linear", "cosine", "cosine_with_restarts" ,"polynomial", "constant", "constant_with_warmup" ,"piecewise_constant"]
@@ -59,7 +65,9 @@ train_iterations = ["train_iterations","TX",None,1000,int,ALL]
 train_batch_size = ["train_batch_size", "TX",None,2,int,ALL]
 train_learning_rate = ["train_learning_rate","TX",None,"1e-4",float,ALL]
 train_optimizer =["train_optimizer","DD",OPTIMIZERS,"adamw",str,ALL]
+train_optimizer_settings = ["train_optimizer_settings", "TX",None,"",str,ALL]
 train_lr_scheduler =["train_lr_scheduler","DD",SCHEDULERS, "cosine",str,ALL]
+train_lr_scheduler_settings = ["train_lr_scheduler_settings", "TX",None,"",str,ALL]
 save_lora_name =  ["save_lora_name", "TX",None,"",str,NDIFF2]
 use_gradient_checkpointing = ["use_gradient_checkpointing","CH",None,False,bool,ALL]
 
@@ -114,7 +122,7 @@ train_max_timesteps = ["train_max_timesteps", "TX",None,1000,int,ALL]
 
 r_column1 = [network_type,network_rank,network_alpha,lora_data_directory,lora_trigger_word]
 r_column2 = [image_size ,train_iterations,train_batch_size ,train_learning_rate]
-r_column3 = [train_optimizer,train_lr_scheduler, save_lora_name,use_gradient_checkpointing]
+r_column3 = [train_optimizer,train_optimizer_settings, train_lr_scheduler,train_lr_scheduler_settings, save_lora_name,use_gradient_checkpointing]
 row1 = [network_blocks]
 
 o_column1 = [network_conv_rank,network_conv_alpha,network_element,image_buckets_step,
@@ -197,7 +205,7 @@ def on_ui_tabs():
     save_symbol = '\U0001f4be'     # 💾
     refresh_symbol = '\U0001f504'  # 🔄
 
-    with gr.Blocks() as ui:
+    with gr.Blocks(css=".gradio-textbox {margin-bottom: 0 !important;}") as ui:
         with gr.Tab("Train"):
             result = gr.Textbox(label="Message")
             with gr.Row():

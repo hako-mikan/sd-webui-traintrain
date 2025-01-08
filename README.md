@@ -6,6 +6,11 @@
 [<img src="https://img.shields.io/badge/言語-日本語-green.svg?style=plastic" height="25" />](README_ja.md)
 [<img src="https://img.shields.io/badge/Support-%E2%99%A5-magenta.svg?logo=github&style=plastic" height="25" />](https://github.com/sponsors/hako-mikan)
 
+# Recent Update
+- Added Optimizers
+DAdaptAdaGrad, DAdaptAdan, DAdaptSGD, SGDNesterov8bit, Lion8bit, PagedAdamW8bit, PagedLion8bit, RAdamScheduleFree, AdamWScheduleFree, SGDScheduleFree, CAME, Tiger, AdamMini, PagedAdamW, PagedAdamW32bit, SGDNesterov
+- added addtional settigs for Optimizer and lr Scheduler
+
 # Overview
 This is a tool for training LoRA for Stable Diffusion. It operates as an extension of the Stable Diffusion Web-UI and does not require setting up a training environment. It accelerates the training of regular LoRA, iLECO (instant-LECO), which speeds up the learning of LECO (removing or emphasizing a model's concept), and differential learning that creates slider LoRA from two differential images.
 

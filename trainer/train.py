@@ -121,7 +121,6 @@ def train_main(jsononly, mode, modelname, vaename, *args):
         )
         model_data.forge_loading_parameters = forge_model_params
         forge_model_reload()
-        print(dir(shared.sd_model.forge_objects.vae.first_stage_model))
         vae = shared.sd_model.forge_objects.vae.first_stage_model
     else:
         sd_models.load_model(checkpoint_info)
@@ -480,15 +479,31 @@ def flush():
 
 def create_network(t):
     network = load_network(t)
-    t.optimizer_module = trainer.get_optimizer(t.train_optimizer)
-    optimizer = t.optimizer_module(network.prepare_optimizer_params(),lr=t.train_learning_rate if t.train_optimizer != "adafactor" else None)
-    lr_scheduler = load_lr_scheduler(t, optimizer)
+    optimizer= trainer.get_optimizer(t.train_optimizer, network.prepare_optimizer_params(), t.train_learning_rate, t.train_optimizer_settings, network)
 
-    t.db(vars(lr_scheduler), pp = True)
+    t.is_schedulefree = t.train_optimizer.endswith("schedulefree".lower())
 
-    network, optimizer, lr_scheduler = t.a.prepare(network, optimizer, lr_scheduler)
+    if t.is_schedulefree:
+        optimizer.train()
+    else:
+        lr_scheduler = load_lr_scheduler(t, optimizer)
 
-    return network, optimizer, lr_scheduler
+    print(f"Optimizer : {type(optimizer).__name__}")
+    print(f"Optimizer Settings : {t.train_optimizer_settings}")
+
+    network, optimizer, lr_scheduler = t.a.prepare(network, optimizer, None if t.is_schedulefree else lr_scheduler)
+
+    return network, optimizer, DummyScheduler() if t.is_schedulefree else lr_scheduler
+
+class DummyScheduler():
+    def __init__(self):
+        pass
+
+    def get_last_lr(self):
+        return [0, 0]
+
+    def step(self):
+        pass
 
 def load_network(t):
     types = trainer.all_configs[get_name_index("network_type")][2]
@@ -508,7 +523,8 @@ def load_lr_scheduler(t, optimizer):
             num_warmup_steps = t.train_lr_warmup_steps if t.train_lr_warmup_steps > 0 else 0,
             num_training_steps = t.train_iterations,
             num_cycles = t.train_lr_scheduler_num_cycles if t.train_lr_scheduler_num_cycles > 0 else 1,
-            power = t.train_lr_scheduler_power if t.train_lr_scheduler_power > 0 else 1.0
+            power = t.train_lr_scheduler_power if t.train_lr_scheduler_power > 0 else 1.0,
+            **t.train_lr_scheduler_settings
         )
 
 def stop_time(save):

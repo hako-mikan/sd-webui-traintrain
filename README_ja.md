@@ -9,6 +9,11 @@
 # Overview
 Stable DiffusionのLoRAを学習するツールです。Stable Diffusion Web-UIの拡張として動作し、学習用の環境構築を必要としません。通常のLoRA及び、モデルの概念を除去・強調するLECOの学習を高速化したiLECO(instant-LECO)と、ふたつの差分画像からスライダーLoRAなどを作成する差分学習を行えます。
 
+# Recent Update
+- Optimizerを追加しました。
+DAdaptAdaGrad, DAdaptAdan, DAdaptSGD, SGDNesterov8bit, Lion8bit, PagedAdamW8bit, PagedLion8bit, RAdamScheduleFree, AdamWScheduleFree, SGDScheduleFree, CAME, Tiger, AdamMini, PagedAdamW, PagedAdamW32bit, SGDNesterov
+- Optimizer, lr Schedulerの追加設定を行えるようになりました。
+
 ## もくじ
 - [使用要件](#使用要件)
 - [インストール](#インストール)
@@ -24,7 +29,7 @@ Stable DiffusionのLoRAを学習するツールです。Stable Diffusion Web-UI�
 - [謝辞・参考文献](#謝辞)
 
 ## 使用要件
-　Web-UI 1.7で動作します。
+　Web-UI 1.7以上、最新版のForgeで動作します。
 
 ## インストール
 　Web-UIのInstall From URLに`https://github.com/hako-mikan/sd-webui-traintrain`と入力しInstallボタンを押します。少し(数秒～数十秒)時間が掛かります。

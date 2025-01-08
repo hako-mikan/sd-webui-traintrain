@@ -1,10 +1,10 @@
 import json
 import os
+import ast
 import warnings
 from datetime import datetime
 from typing import Literal
 from diffusers import StableDiffusionPipeline, DDPMScheduler, StableDiffusionXLPipeline
-import os
 import torch
 import subprocess
 import sys
@@ -38,6 +38,7 @@ from diffusers import (
 all_configs = []
 
 PASS2 = "2nd pass"
+POs = ["came", "tiger", "adammini"]
 
 path_root = basedir()
 jsonspath = os.path.join(path_root,"jsons")
@@ -117,9 +118,26 @@ class Trainer():
                         found = True
                 if not found:
                     value = ""
-
+            
+            if "train_optimizer" == sets[0]:
+                value = value.lower()
+            
+            if "train_optimizer_settings" == sets[0] or "train_lr_scheduler_settings" == sets[0]:
+                dvalue = {}
+                if value is not None and len(value.strip()) > 0:
+                    # 改行や空白を取り除きつつ処理
+                    value = value.replace(" ", "").replace(";","\n")
+                    args = value.split("\n")
+                    for arg in args:
+                        if "=" in arg:  # "=" が存在しない場合は無視
+                            key, val = arg.split("=", 1)
+                            val = ast.literal_eval(val)  # リテラル評価で型を適切に変換
+                            dvalue[key] = val
+                value = dvalue
+                print(dvalue)
             if set: 
                 setattr(self, sets[0].split("(")[0], value)
+
         return jdict
 
     savedata = ["model", "vae", ]
@@ -192,7 +210,12 @@ def import_json(name, preset = False):
     
     def setconfigs(data, output):
         for key, gtype ,_ ,default , dtype, _ in all_configs:
+            from scripts.traintrain import OPTIMIZERS
             if key in data:
+                if key == "train_optimizer":
+                    for optim in OPTIMIZERS:
+                        if data[key].lower() == optim.lower():
+                            data[key] = optim 
                 if key == PASS2: continue
                 if gtype == "DD" or "learning rate" in key:
                     dtype = str
@@ -222,35 +245,153 @@ def import_json(name, preset = False):
 
 AVAILABLE_SCHEDULERS = Literal["ddim", "ddpm", "lms", "euler_a"]
 
-def get_optimizer(name: str):
+def get_optimizer(name: str, trainable_params, lr, optimizer_kwargs, network):
     name = name.lower()
     if name.startswith("dadapt"):
         import dadaptation
         if name == "dadaptadam":
-            return dadaptation.DAdaptAdam
+            optim = dadaptation.DAdaptAdam
         elif name == "dadaptlion":
-            return dadaptation.DAdaptLion
-    elif name.endswith("8bit"):  
+            optim = dadaptation.DAdaptLion               
+        elif name == "DAdaptAdaGrad".lower():
+            optim = dadaptation.DAdaptAdaGrad
+        elif name == "DAdaptAdan".lower():
+            optim = dadaptation.DAdaptAdan
+        elif name == "DAdaptSGD".lower():
+            optim = dadaptation.DAdaptSGD
+
+    elif name.endswith("8bit"): 
         import bitsandbytes as bnb
-        if name == "adam8bit":
-            return bnb.optim.Adam8bit
-        elif name == "adamw8bit":  
-            return bnb.optim.AdamW8bit
+        try:
+            if name == "adam8bit":
+                optim = bnb.optim.Adam8bit
+            elif name == "adamw8bit":  
+                optim = bnb.optim.AdamW8bit
+            elif name == "SGDNesterov8bit".lower():
+                optim = bnb.optim.SGD8bit
+                if "momentum" not in optimizer_kwargs:
+                    optimizer_kwargs["momentum"] = 0.9
+                optimizer_kwargs["nesterov"] = True
+            elif name == "Lion8bit".lower():
+                optim = bnb.optim.Lion8bit
+            elif name == "PagedAdamW8bit".lower():
+                optim = bnb.optim.PagedAdamW8bit
+            elif name == "PagedLion8bit".lower():
+                optim  = bnb.optim.PagedLion8bit
+
+        except AttributeError:
+            raise AttributeError(
+                f"No {name}. The version of bitsandbytes installed seems to be old. Please install newest. / {name}が見つかりません。インストールされているbitsandbytesのバージョンが古いようです。最新版をインストールしてください。"
+            )
+
     elif name.lower() == "adafactor":
         import transformers
-        return transformers.optimization.Adafactor
+        optim = transformers.optimization.Adafactor
+
+    elif name == "PagedAdamW".lower():
+        import bitsandbytes as bnb
+        optim = bnb.optim.PagedAdamW
+    elif name == "PagedAdamW32bit".lower():
+        import bitsandbytes as bnb
+        optim = bnb.optim.PagedAdamW32bit
+
+    elif name == "SGDNesterov".lower():
+        if "momentum" not in optimizer_kwargs:
+            optimizer_kwargs["momentum"] = 0.9
+        optimizer_kwargs["nesterov"] = True
+        optim = torch.optim.SGD
+
+    elif name.endswith("schedulefree".lower()):
+        import schedulefree as sf
+        if name == "RAdamScheduleFree".lower():
+            optim = sf.RAdamScheduleFree
+        elif name == "AdamWScheduleFree".lower():
+            optim = sf.AdamWScheduleFree
+        elif name == "SGDScheduleFree".lower():
+            optim = sf.SGDScheduleFree
+
+    elif name in POs:
+        import pytorch_optimizer as po    
+        if name == "CAME".lower():
+            optim = po.CAME        
+        elif name == "Tiger".lower():
+            optim = po.Tiger        
+        elif name == "AdamMini".lower():
+            optim = po.AdamMini   
+        
     else:
         if name == "adam":
-            return torch.optim.Adam
+            optim = torch.optim.Adam
         elif name == "adamw":
-            return torch.optim.AdamW
+            optim = torch.optim.AdamW  
         elif name == "lion":
             from lion_pytorch import Lion
-            return Lion
+            optim = Lion
         elif name == "prodigy":
             import prodigyopt
-            return prodigyopt.Prodigy
+            optim = prodigyopt.Prodigy
+
     
+    if name.startswith("DAdapt".lower()) or name == "Prodigy".lower():
+    # check lr and lr_count, and logger.info warning
+        actual_lr = lr
+        lr_count = 1
+        if type(trainable_params) == list and type(trainable_params[0]) == dict:
+            lrs = set()
+            actual_lr = trainable_params[0].get("lr", actual_lr)
+            for group in trainable_params:
+                lrs.add(group.get("lr", actual_lr))
+            lr_count = len(lrs)
+
+        if actual_lr <= 0.1:
+            print(
+                f"learning rate is too low. If using D-Adaptation or Prodigy, set learning rate around 1.0 / 学習率が低すぎるようです。D-AdaptationまたはProdigyの使用時は1.0前後の値を指定してください: lr={actual_lr}"
+            )
+            print("recommend option: lr=1.0 / 推奨は1.0です")
+        if lr_count > 1:
+            print(
+                f"when multiple learning rates are specified with dadaptation (e.g. for Text Encoder and U-Net), only the first one will take effect / D-AdaptationまたはProdigyで複数の学習率を指定した場合（Text EncoderとU-Netなど）、最初の学習率のみが有効になります: lr={actual_lr}"
+            )
+
+    elif name == "Adafactor".lower():
+        # 引数を確認して適宜補正する
+        if "relative_step" not in optimizer_kwargs:
+            optimizer_kwargs["relative_step"] = True  # default
+        if not optimizer_kwargs["relative_step"] and optimizer_kwargs.get("warmup_init", False):
+            print(
+                f"set relative_step to True because warmup_init is True / warmup_initがTrueのためrelative_stepをTrueにします"
+            )
+            optimizer_kwargs["relative_step"] = True
+ 
+        if optimizer_kwargs["relative_step"]:
+            print(f"relative_step is true / relative_stepがtrueです")
+            if lr != 0.0:
+                print(f"learning rate is used as initial_lr / 指定したlearning rateはinitial_lrとして使用されます")
+  
+
+            # trainable_paramsがgroupだった時の処理：lrを削除する
+            if type(trainable_params) == list and type(trainable_params[0]) == dict:
+                has_group_lr = False
+                for group in trainable_params:
+                    p = group.pop("lr", None)
+                    has_group_lr = has_group_lr or (p is not None)
+
+            lr = None
+        #TODO
+
+        # else:
+        #     if args.max_grad_norm != 0.0:
+        #         logger.warning(
+        #             f"because max_grad_norm is set, clip_grad_norm is enabled. consider set to 0 / max_grad_normが設定されているためclip_grad_normが有効になります。0に設定して無効にしたほうがいいかもしれません"
+        #         )
+        #     if args.lr_scheduler != "constant_with_warmup":
+        #         logger.warning(f"constant_with_warmup will be good / スケジューラはconstant_with_warmupが良いかもしれません")
+        #     if optimizer_kwargs.get("clip_threshold", 1.0) != 1.0:
+        #         logger.warning(f"clip_threshold=1.0 will be good / clip_thresholdは1.0が良いかもしれません")
+
+
+    return optim(trainable_params, lr = lr, **optimizer_kwargs) if name == "AdamMini" else optim(network, lr = lr, **optimizer_kwargs) 
+
 
 def get_random_resolution_in_bucket(bucket_resolution: int = 512) -> tuple[int, int]:
     max_resolution = bucket_resolution
