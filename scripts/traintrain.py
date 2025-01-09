@@ -12,6 +12,8 @@ from modules.shared import opts
 from modules.ui import create_output_panel, create_refresh_button
 from trainer import train, trainer, gen
 from packaging import version
+import platform
+import subprocess
 
 jsonspath = trainer.jsonspath
 logspath = trainer.logspath
@@ -397,7 +399,14 @@ def on_ui_tabs():
             return gr.update(choices = blocks, value = [x for x in select if x in blocks])
 
         def openfolder_f():
-            os.startfile(jsonspath)
+            if platform.system() == "Windows":
+                os.startfile(jsonspath)
+            elif platform.system() == "Darwin":  # macOS
+                subprocess.call(["open", jsonspath])
+            elif platform.system() == "Linux":  # Linux
+                subprocess.call(["xdg-open", jsonspath])
+            else:
+                print("Unsupported operating system")
 
         loadjson.click(trainer.import_json,[sets_file], [mode, model, vae] +  train_settings_1 +  train_settings_2 + prompts[:2])
         loadpreset.click(load_preset,[presets], [mode, model, vae] +  train_settings_1 +  train_settings_2 + prompts[:2])
