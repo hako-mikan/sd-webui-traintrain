@@ -215,26 +215,30 @@ def load_resize_image_and_text(t):
                 lower = bucket_height + upper
                 image = image.crop((0, upper, bucket_width, lower))
 
-            if usealpha:
-                tensor = torch.from_numpy(np.array(image)).permute(2, 0, 1).float() / 255.0
-                # アルファチャンネルの抽出
-                alpha_channel = tensor[3]
-                # 透明な部分を0、透明でない部分を1に設定
-                alpha_mask = (alpha_channel > 0.1).float()
-                # マスクのサイズを取得
-                H, W = alpha_mask.shape
-                # 新しいサイズを計算（縦横8分の1）
-                new_H, new_W = H // 8, W // 8
-                # マスクを縦横8分の1にリサイズ
-                mask = F.interpolate(alpha_mask.unsqueeze(0).unsqueeze(0), size=(new_H, new_W), mode='nearest')
-                mask = torch.cat([mask]*4, dim=1)
-            else:
-                # アルファチャンネルがない場合の画像サイズの取得
-                tensor = torch.from_numpy(np.array(image)).permute(2, 0, 1).float() / 255.0
-                _, H, W = tensor.shape  # アルファチャンネルがない場合のためにRGBチャンネルを無視
+                image_array = np.array(image)
+                if len(image_array.shape) == 2:  # グレースケール画像 (H, W)
+                    # グレースケール画像を (H, W, 1) に変換
+                    image_array = np.expand_dims(image_array, axis=-1)
+
+                # テンソル化し、正規化
+                tensor = torch.from_numpy(image_array).permute(2, 0, 1).float() / 255.0
+
+                # 画像サイズの取得
+                _, H, W = tensor.shape  # RGBまたはグレースケール画像に対応
                 new_H, new_W = H // 8, W // 8  # 新しいサイズを計算（縦横8分の1）
-                # すべて1のテンソルを作成
-                mask = torch.ones((1, 4, new_H, new_W))
+
+                # 条件分岐
+                if usealpha:
+                    # アルファチャンネルの抽出
+                    alpha_channel = tensor[3] if tensor.shape[0] > 3 else torch.ones_like(tensor[0])  # アルファチャンネルがない場合は1
+                    # 透明な部分を0、透明でない部分を1に設定
+                    alpha_mask = (alpha_channel > 0.1).float()
+                    # マスクを縦横8分の1にリサイズ
+                    mask = F.interpolate(alpha_mask.unsqueeze(0).unsqueeze(0), size=(new_H, new_W), mode='nearest')
+                    mask = torch.cat([mask] * 4, dim=1)
+                else:
+                    # すべて1のテンソルを作成
+                    mask = torch.ones((1, 4, new_H, new_W))
 
             image = image.convert("RGB")
 
