@@ -185,6 +185,8 @@ def find_filesets(t):
 
 def load_resize_image_and_text(t):
     for img_path, txt_path, cap_path, filename in t.image_pathsets:
+        if os.path.basename(img_path).startswith('.'):
+            continue
         image = Image.open(img_path)
         usealpha = image.mode == "RGBA"
 
