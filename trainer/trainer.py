@@ -134,7 +134,6 @@ class Trainer():
                             val = ast.literal_eval(val)  # リテラル評価で型を適切に変換
                             dvalue[key] = val
                 value = dvalue
-                print(dvalue)
             if set: 
                 setattr(self, sets[0].split("(")[0], value)
 
@@ -390,7 +389,7 @@ def get_optimizer(name: str, trainable_params, lr, optimizer_kwargs, network):
         #         logger.warning(f"clip_threshold=1.0 will be good / clip_thresholdは1.0が良いかもしれません")
 
 
-    return optim(trainable_params, lr = lr, **optimizer_kwargs) if name == "AdamMini" else optim(network, lr = lr, **optimizer_kwargs) 
+    return optim(network, lr = lr, **optimizer_kwargs) if name == "AdamMini".lower() else  optim(trainable_params, lr = lr, **optimizer_kwargs) 
 
 
 def get_random_resolution_in_bucket(bucket_resolution: int = 512) -> tuple[int, int]:
