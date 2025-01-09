@@ -253,7 +253,7 @@ class LoRANetwork(nn.Module):
                             alpha = self.conv_alpha
 
                         # print(f"{lora_name}")
-                        t.db(key)
+                        # t.db(key)
                         lora = self.module(
                             lora_name, child_module, 1, dim, alpha)
                         loras.append(lora)
