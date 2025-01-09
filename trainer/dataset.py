@@ -198,7 +198,7 @@ def load_resize_image_and_text(t):
         def resize_and_crop(ar_error, image, bucket_width, bucket_height, disable_upscale):
             if (ar_error > 0 and image.width < bucket_width or 
                 ar_error <= 0 and image.height < bucket_height) and disable_upscale:
-                return None
+                return None, None
 
             if ar_error <= 0:  # 幅＜高さなら高さを合わせる
                 temp_width = int(image.width*bucket_height/image.height)
