@@ -67,19 +67,34 @@ class LatentsConds(Dataset):
 
     def __len__(self):
         return len(self.latents_conds)
-
+   
     def __getitem__(self, i):
         batch = {}
         latent, mask, cond1, cond2 = self.latents_conds[i]
+        
+        # Ensure latent is on CPU before returning
+        if isinstance(latent, torch.Tensor):
+            latent = latent.cpu()
         batch["latent"] = latent.squeeze()
+
+        # Handle conditional inputs
+        if isinstance(cond1, torch.Tensor):
+            cond1 = cond1.cpu()
         batch["cond1"] = cond1 if isinstance(cond1, str) else cond1.squeeze() if cond1 is not None else None
 
         if self.isxl:
+            if isinstance(cond2, torch.Tensor):
+                cond2 = cond2.cpu()
             batch["cond2"] = cond2 if isinstance(cond2, str) else cond2.squeeze() if cond2 is not None else None
+            
+        # Handle mask
         if mask is not None:
-            batch["mask"] = mask.squeeze() 
+            if isinstance(mask, torch.Tensor):
+                mask = mask.cpu()
+            batch["mask"] = mask.squeeze()
 
         return batch
+
 
 TARGET_IMAGEFILES = ["jpg", "jpeg", "png", "gif", "tif", "tiff", "bmp", "webp", "pcx", "ico"]
 
