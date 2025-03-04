@@ -10,7 +10,7 @@
 Stable DiffusionのLoRAを学習するツールです。Stable Diffusion Web-UIの拡張として動作し、学習用の環境構築を必要としません。通常のLoRA及び、モデルの概念を除去・強調するLECOの学習を高速化したiLECO(instant-LECO)と、ふたつの差分画像からスライダーLoRAなどを作成する差分学習を行えます。
 
 # Recent Update
-2025.02.27
+2025.03.04
 新しい学習モード「ADDifT」「Multi-ADDifT」を追加しました。詳細は[Noteの記事]()を参照してください。
 
 ## もくじ
