@@ -10,13 +10,13 @@ import torch.nn.functional as F
 test = False
 
 def make_dataloaders(t):
-    find_filesets(t)                               #画像、テキスト、キャプションのパスを取得
-    make_buckets(t)                            #画像サイズのリストを作成
+    find_filesets(t)                    #画像、テキスト、キャプションのパスを取得
+    make_buckets(t)                     #画像サイズのリストを作成
     load_resize_image_and_text(t)       #画像を読み込み、画像サイズごとに振り分け、リサイズ、テキストの読み込み
-                                                        #t.image_bucketsは画像サイズをkeyとしたimage,txt, captionのリスト
-    encode_image_text(t)                    #画像とテキストをlatentとembeddingに変換
+                                        #t.image_bucketsは画像サイズをkeyとしたimage,txt, captionのリスト
+    encode_image_text(t)                #画像とテキストをlatentとembeddingに変換
 
-    dataloaders = []                             #データセットのセットを作成
+    dataloaders = []                    #データセットのセットを作成
     for key in t.image_buckets:
         if test: save_images(t, key, t.image_buckets_raw[key])
         dataset = LatentsConds(t, t.image_buckets[key])
@@ -63,22 +63,37 @@ class LatentsConds(Dataset):
     def __init__(self, t, latents_conds):
         self.latents_conds = latents_conds
         self.batch_size = t.train_batch_size
-        self.isxl = t.isxl
+        self.revert = t.diff_revert_original_target
+        self.latents_conds = self.latents_conds * t.image_num_multiply
+        if t.train_batch_size > len(self.latents_conds):
+            self.latents_conds = self.latents_conds * t.train_batch_size
 
     def __len__(self):
         return len(self.latents_conds)
 
     def __getitem__(self, i):
         batch = {}
-        latent, mask, cond1, cond2 = self.latents_conds[i]
-        batch["latent"] = latent.squeeze()
-        batch["cond1"] = cond1 if isinstance(cond1, str) else cond1.squeeze() if cond1 is not None else None
+        if isinstance(self.latents_conds[i], tuple):
+            origs, targs = self.latents_conds[i]
+            if self.revert:
+                targs, origs = origs, targs
+            orig_latent, orig_mask, orig_cond1, orig_cond2 = origs  
+            targ_latent, targ_mask, targ_cond1, targ_cond2 = targs
 
-        if self.isxl:
-            batch["cond2"] = cond2 if isinstance(cond2, str) else cond2.squeeze() if cond2 is not None else None
-        if mask is not None:
-            batch["mask"] = mask.squeeze() 
+            batch["orig_latent"] = orig_latent.squeeze()
+            batch["targ_latent"] = targ_latent.squeeze()
+            if orig_cond1 is not None: batch["orig_cond1"] = orig_cond1 if isinstance(orig_cond1, str) else orig_cond1.squeeze().cpu()
+            if orig_cond2 is not None: batch["orig_cond2"] = orig_cond2 if isinstance(orig_cond2, str) else orig_cond2.squeeze().cpu()   
+            if targ_cond1 is not None: batch["targ_cond1"] = targ_cond1 if isinstance(targ_cond1, str) else targ_cond1.squeeze().cpu()
+            if targ_cond2 is not None: batch["targ_cond2"] = targ_cond2 if isinstance(targ_cond2, str) else targ_cond2.squeeze().cpu()  
+            if isinstance(orig_mask, torch.Tensor): batch["mask"] = orig_mask.squeeze().cpu()
 
+        else:
+            latent, mask, cond1, cond2 = self.latents_conds[i]
+            batch["latent"] = latent.squeeze().cpu()
+            if cond1 is not None: batch["cond1"] = cond1 if isinstance(cond1, str) else cond1.squeeze().cpu()
+            if cond2 is not None: batch["cond2"] = cond2 if isinstance(cond2, str) else cond2.squeeze().cpu()  
+            if isinstance(mask, torch.Tensor): batch["mask"] = mask.squeeze().cpu()
         return batch
 
 TARGET_IMAGEFILES = ["jpg", "jpeg", "png", "gif", "tif", "tiff", "bmp", "webp", "pcx", "ico"]
@@ -159,6 +174,7 @@ def find_filesets(t):
     pathsets = []
     
     # Walk through the folder and subfolders
+    pathdict = {}
     for root, dirs, files in os.walk(t.lora_data_directory):
         for file in files:
             if any(file.endswith(ext) for ext in TARGET_IMAGEFILES):
@@ -175,18 +191,44 @@ def find_filesets(t):
                 # Check for corresponding caption file
                 caption_file = os.path.splitext(image_path)[0] + '.caption'
                 caption_file = caption_file if os.path.isfile(caption_file) else None
-                pathsets.append([image_path, text_file, caption_file, filename])
+                pathsets.append([image_path, text_file, caption_file, filename, None, None])
+                pathdict[image_path] = [image_path, text_file, caption_file, filename]
 
     t.db("Images : ", len(pathsets))
-    t.db("Texts : " , sum(1 for _, text, _, _ in pathsets if text is not None))
-    t.db("Captions : " , sum(1 for _, _, caption, _ in pathsets if caption is not None))
+    t.db("Texts : " , sum(1 for patch in pathsets if patch[1] is not None))
+    t.db("Captions : " , sum(1 for patch in pathsets if patch[2] is not None))
 
     t.image_pathsets = pathsets
 
+    if t.mode == "Multi-ADDifT":
+        pairpathsets = []
+        for image_path, _, _, _, _, _ in pathsets:
+            base_name, ext = os.path.splitext(image_path)
+            diff_target_path = f"{base_name}{t.diff_target_name}{ext}"
+            if diff_target_path in pathdict:
+                with Image.open(pathdict[image_path][0]) as orig_img:
+                    orig_size = orig_img.size
+                with Image.open(pathdict[diff_target_path][0]) as targ_img:
+                    targ_size = targ_img.size
+                    new_size = (min(orig_size[0], targ_size[0]), min(orig_size[1], targ_size[1]))
+
+                pairpathsets.append(pathdict[image_path] + [new_size, pathdict[diff_target_path][0]])
+                pairpathsets.append(pathdict[diff_target_path] + [new_size, None])
+        t.image_pathsets = pairpathsets
+
+import os
+from PIL import Image
+
+
 def load_resize_image_and_text(t):
-    for img_path, txt_path, cap_path, filename in t.image_pathsets:
+    for img_path, txt_path, cap_path, filename, pair_size, targ_path in t.image_pathsets:
+        if os.path.basename(img_path).startswith('.'):
+            continue
         image = Image.open(img_path)
         usealpha = image.mode == "RGBA"
+
+        if pair_size is not None and image.size != pair_size:
+            image = image.resize(pair_size, Image.LANCZOS)
 
         #max sizes
         ratio = image.width / image.height
@@ -240,11 +282,11 @@ def load_resize_image_and_text(t):
 
         resized, alpha_mask = resize_and_crop(ar_error, image, *max, t.image_disable_upscale)
         if resized is not None:
-            t.image_buckets_raw[max].append([resized, alpha_mask, load_text_files(txt_path), load_text_files(cap_path), filename])
+            t.image_buckets_raw[max].append([resized, alpha_mask, load_text_files(txt_path), load_text_files(cap_path), filename, img_path, targ_path])
             if t.image_mirroring:
                 flipped = resized.transpose(Image.FLIP_LEFT_RIGHT)
                 flipped_mask = torch.flip(alpha_mask, [1]) if alpha_mask is not None else None
-                t.image_buckets_raw[max].append([flipped, flipped_mask, load_text_files(txt_path), load_text_files(cap_path), filename])
+                t.image_buckets_raw[max].append([flipped, flipped_mask, load_text_files(txt_path), load_text_files(cap_path), filename, img_path+"m", targ_path+"m" if targ_path is not None else targ_path])
 
         ar_errors = t.image_sub_ratios - ratio
 
@@ -255,11 +297,11 @@ def load_resize_image_and_text(t):
                 ar_error = ar_errors[indice]
                 resized, alpha_mask  = resize_and_crop(ar_error, image, *sub, t.image_disable_upscale)
                 if resized is not None:
-                    t.image_buckets_raw[sub].append([resized, alpha_mask, load_text_files(txt_path), load_text_files(cap_path), filename])
+                    t.image_buckets_raw[sub].append([resized, alpha_mask, load_text_files(txt_path), load_text_files(cap_path), filename, img_path, targ_path])
                     if t.image_mirroring:
                         flipped = resized.transpose(Image.FLIP_LEFT_RIGHT)
                         flipped_mask = torch.flip(alpha_mask, [1]) if alpha_mask is not None else None
-                        t.image_buckets_raw[sub].append([flipped, flipped_mask, load_text_files(txt_path), load_text_files(cap_path), filename])
+                        t.image_buckets_raw[sub].append([flipped, flipped_mask, load_text_files(txt_path), load_text_files(cap_path), filename, img_path+"m", targ_path+"m" if targ_path is not None else targ_path])
                 
                 ar_errors[indice] = ar_errors[indice] + 1
         except:
@@ -280,7 +322,8 @@ def encode_image_text(t):
         emp1, emp2 = t.text_model.encode_text(t.lora_trigger_word)
         bar = tqdm(total = t.total_images)
         for key in t.image_buckets_raw:
-            for image, mask, text, caption, filename in t.image_buckets_raw[key]:
+            pairdict = {}
+            for image, mask, text, caption, filename, img_path, targ_path in t.image_buckets_raw[key]:
                 latent = t.image2latent(t,image)
                 if t.image_use_filename_as_tag:
                     prompt = t.lora_trigger_word + "," + filename
@@ -297,6 +340,28 @@ def encode_image_text(t):
                     emb1 = emb2 = prompt
                 t.image_buckets[key].append([latent, mask, emb1, emb2])
                 bar.update(1)
+                pairdict[img_path] = [latent, mask, emb1, emb2, targ_path, image]
+            
+            if t.mode == "Multi-ADDifT":
+                t.image_buckets[key] = []
+                for img_path_key in pairdict:
+                    if pairdict[img_path_key][4] in pairdict:
+                        image_o = pairdict[img_path_key][5]
+                        image_t = pairdict[pairdict[img_path_key][4]][5]
+
+                        image_np = np.array(image_o, dtype=np.int16)
+                        image_t_np = np.array(image_t, dtype=np.int16)
+
+                        mask = image_np - image_t_np
+                        mask = torch.tensor(mask, dtype=torch.float32)
+                        mask = mask.abs().sum(dim=-1)
+                        mask = torch.where(mask > 10, torch.tensor(1, dtype=torch.uint8), torch.tensor(0, dtype=torch.uint8))
+
+                        mask = F.interpolate(mask.unsqueeze(0).unsqueeze(0), size=(latent.shape[2], latent.shape[3]), mode='nearest')
+                        #save_image1(t, mask.squeeze(0) * 255, "mask") 
+
+                        mask = torch.cat([mask] * 4, dim=1)
+                        t.image_buckets[key].append((pairdict[img_path_key][:-2], pairdict[pairdict[img_path_key][4]][:-2]))
 
 def save_images(t,key,images):
     if not images: return
@@ -305,3 +370,31 @@ def save_images(t,key,images):
     for i, image in enumerate(images):
         ipath = os.path.join(path, f"{i}.jpg")
         image[0].save(ipath)
+
+
+def save_image1(t, image, dirname=""):
+    path = os.path.join(t.lora_data_directory, dirname) if dirname else t.lora_data_directory
+    os.makedirs(path, exist_ok=True)
+    
+    if isinstance(image, torch.Tensor):
+        image = image.detach().cpu().numpy()
+
+    if isinstance(image, np.ndarray):
+        if image.ndim == 3 and image.shape[0] == 1:  
+            image = image.squeeze(0)
+        
+        if image.ndim == 2:  # 2D配列ならグレースケール画像
+            image = Image.fromarray(image.astype(np.uint8), mode='L')
+        elif image.ndim == 3:
+            if image.shape[0] in [3, 4]:  # (C, H, W) 形式なら (H, W, C) に変換
+                image = np.moveaxis(image, 0, -1)
+            image = Image.fromarray(image.astype(np.uint8))
+        else:
+            raise ValueError(f"Unexpected image shape: {image.shape}")
+
+    try:
+        image_path = os.path.join(path, "saved_image.png")
+        image.save(image_path)
+        print(f"Image saved at: {image_path}")
+    except Exception as e:
+        print(f"Failed to save image: {e}")

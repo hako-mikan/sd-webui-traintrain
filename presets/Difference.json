@@ -69,7 +69,7 @@
     "save_as_json": false,
     "model_v_pred": false,
     "use_2nd_pass_settings": false,
-    "mode": "iLECO",
+    "mode": "Difference",
     "model": "",
     "vae": "None",
     "original prompt": "",

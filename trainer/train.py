@@ -8,24 +8,21 @@ import json
 from PIL import Image
 import traceback
 import torch
+from torch.nn import ModuleList
 from tqdm import tqdm
-from modules import sd_models, sd_vae, shared, prompt_parser, scripts, lowvram
+from modules import sd_models, sd_vae, shared, prompt_parser, lowvram
 from trainer.lora import LoRANetwork, LycorisNetwork
 from trainer import trainer, dataset
-from diffusers.optimization import get_scheduler
 from pprint import pprint
 from accelerate.utils import set_seed
 from diffusers.models import AutoencoderKL
-from transformers.optimization import AdafactorSchedule
-import networks
-
 
 MAX_DENOISING_STEPS = 1000
 ML = "LoRA"
 MD = "Difference"
 
 try:
-    from modules.sd_models import forge_model_reload, model_data, FakeInitialModel
+    from modules.sd_models import forge_model_reload, model_data
     from modules_forge.main_entry import forge_unet_storage_dtype_options
     from backend.memory_management import free_memory
     forge = True
@@ -104,6 +101,9 @@ def train_main(jsononly, mode, modelname, vaename, *args):
     if t.isfile:
         return "File exist!"
 
+    if modelname == "":
+        return "No Model Selected."
+
     print(" Start Training!")
 
     currentinfo = shared.sd_model.sd_checkpoint_info if hasattr(shared.sd_model, "sd_checkpoint_info") else None
@@ -126,21 +126,13 @@ def train_main(jsononly, mode, modelname, vaename, *args):
         sd_models.load_model(checkpoint_info)
         vae = None
 
-    t.isxl = shared.sd_model.is_sdxl
-    t.isv2 = shared.sd_model.is_sd2
-
-    t.vae_scale_factor = 0.13025 if t.isxl else 0.18215
-
-    model_ver = "sdxl_base_v1-0" if t.isxl else None
-    model_ver = "sd_v2" if t.isv2 else model_ver
-    t.model_version = "sd_v1" if model_ver is None else model_ver
+    t.sd_typer()
 
     checkpoint_filename = shared.sd_model.sd_checkpoint_info.filename
 
-    if t.mode != ML:
-        t.orig_cond, t.orig_vector  = text2cond(t, t.prompts[0])
-        t.targ_cond, t.targ_vector  = text2cond(t, t.prompts[1])
-        t.un_cond, t.un_vector = text2cond(t, t.prompts[2])
+    t.orig_cond, t.orig_vector  = text2cond(t, t.prompts[0])
+    t.targ_cond, t.targ_vector  = text2cond(t, t.prompts[1])
+    t.un_cond, t.un_vector = text2cond(t, t.prompts[2])
 
     print("Preparing the Model...")
 
@@ -158,7 +150,9 @@ def train_main(jsononly, mode, modelname, vaename, *args):
     if not vae:
         vae = AutoencoderKL.from_single_file(vae_path) if vae_path is not None else None
 
-    if t.isxl: 
+    print(type(vae))
+
+    if t.is_sdxl: 
         text_model, unet, vae = trainer.load_checkpoint_model_xl(checkpoint_filename, t, vae = vae)
     else:
         text_model, unet, vae = trainer.load_checkpoint_model(checkpoint_filename, t, vae = vae)
@@ -174,21 +168,21 @@ def train_main(jsononly, mode, modelname, vaename, *args):
     unet.eval()
 
     text_model.to(device = CUDA, dtype = t.train_model_precision)
+    text_model.requires_grad_(False)
+    text_model.eval()
 
     if t.use_gradient_checkpointing:
         unet.train()
         unet.enable_gradient_checkpointing()
-        text_model.text_encoder.text_model.embeddings.requires_grad_(True)  # 先頭のモジュールが勾配有効である必要があるらしい
-        if text_model.text_encoder_2 is not None:
-            text_model.text_encoder_2.text_model.embeddings.requires_grad_(True)
-        text_model.train() #trainがTrueである必要があるらしい
+        text_model.train()
         text_model.gradient_checkpointing_enable()
 
     t.unet = unet
     t.text_model = text_model
 
-    vae.to(CUDA, dtype=t.train_model_precision)
+    vae = vae.to(CUDA, dtype=t.train_model_precision)
     t.vae = vae
+    print(type(t.vae))
 
     t.text2cond = text2cond
     t.image2latent = image2latent
@@ -198,9 +192,7 @@ def train_main(jsononly, mode, modelname, vaename, *args):
     t.a = trainer.make_accelerator(t)
     
     t.unet = t.a.prepare(t.unet)
-    t.text_model.text_encoder = t.a.prepare(t.text_model.text_encoder)
-    if text_model.text_encoder_2 is not None:
-        t.text_model.text_encoder_2 = t.a.prepare(t.text_model.text_encoder_2)
+    t.text_model.text_encoders = ModuleList([t.a.prepare(te) if te is not None else None for te in t.text_model.text_encoders])
 
     if 0 > t.train_seed: t.train_seed = random.randint(0, 2**32)
     set_seed(t.train_seed)
@@ -214,6 +206,8 @@ def train_main(jsononly, mode, modelname, vaename, *args):
             result = train_leco(t)
         elif t.mode == "Difference":
             result = train_diff(t)
+        elif t.mode ==  "ADDifT" or t.mode == "Multi-ADDifT":
+            result = train_diff2(t)
         else:
             result = "Test mode"
 
@@ -263,7 +257,6 @@ def train_lora(t):
     del t.vae
     if "BASE" not in t.network_blocks:
         del t.text_model
-    
     flush()
 
     pbar = tqdm(range(t.train_iterations))
@@ -287,14 +280,16 @@ def train_lora(t):
                     if isinstance(conds1[0], str):
                         conds1, conds2 = t.text_model.encode_text(conds1)
 
-                    added_cond_kwargs = get_added_cond_kwargs(t, conds2, batch_size, size = [*latents.shape[2:4]])
+                    conds1 = conds1.to(CUDA, dtype=t.train_lora_precision) 
+                    if conds2 is not None:
+                        conds2 = conds2.to(CUDA, dtype=t.train_lora_precision)
 
-                    conds1.to(CUDA, dtype=t.train_lora_precision) 
+                    added_cond_kwargs = get_added_cond_kwargs(t, conds2, batch_size, size = [*latents.shape[2:4]])
                     noise_pred = t.unet(noisy_latents, timesteps, conds1, added_cond_kwargs = added_cond_kwargs).sample
 
-                if t.image_use_transparent_background_ajust and "mask" in batch:
-                    noise_pred = noise_pred * batch["mask"].to(CUDA) + noise * (1 - batch["mask"].to(CUDA))
-
+                if t.model_v_pred:
+                    noise = t.noise_scheduler.get_velocity(latents, noise, timesteps)
+                    
                 loss, loss_ema, loss_velocity = process_loss(t, noise_pred, noise, timesteps, loss_ema, loss_velocity)
 
                 c_lrs = [f"{x:.2e}" for x in lr_scheduler.get_last_lr()]
@@ -302,7 +297,7 @@ def train_lora(t):
                 pbar.update(1)
 
                 if t.logging_save_csv:
-                    savecsv(pbar.n, loss_ema, [x.cpu().item() if isinstance(x, torch.Tensor)  else x for x in lr_scheduler.get_last_lr()],t.csvpath)
+                    savecsv(t, pbar.n, loss_ema, [x.cpu().item() if isinstance(x, torch.Tensor)  else x for x in lr_scheduler.get_last_lr()],t.csvpath)
 
                 t.a.backward(loss)
                 optimizer.step()
@@ -312,6 +307,9 @@ def train_lora(t):
                 del noise_pred
 
                 flush()
+
+                #print(network.check_weight(True)[:10])
+                #print(network.check_weight(False)[:10])
                 
                 result = finisher(network, t, pbar.n)
                 if result is not None:
@@ -326,7 +324,9 @@ def train_leco(t):
     global stoptimer
     stoptimer = 0
 
-    del t.vae, t.text_model
+    del t.vae
+    if "BASE" not in t.network_blocks:
+        del t.text_model
     flush()
 
     network, optimizer, lr_scheduler = create_network(t)
@@ -365,7 +365,7 @@ def train_leco(t):
         pbar.set_description(f"Loss EMA * 1000: {loss_ema * 1000:.4f}, Current LR: "+", ".join(c_lrs))   
         pbar.update(1)
         if t.logging_save_csv:
-            savecsv(pbar.n, loss_ema, [x.cpu().item() if isinstance(x, torch.Tensor)  else x for x in lr_scheduler.get_last_lr()],t.csvpath)
+            savecsv(t, pbar.n, loss_ema, [x.cpu().item() if isinstance(x, torch.Tensor)  else x for x in lr_scheduler.get_last_lr()],t.csvpath)
 
         t.a.backward(loss)
         optimizer.step()
@@ -376,7 +376,7 @@ def train_leco(t):
 
         result = finisher(network, t, pbar.n)
         if result is not None:
-            return result 
+            return result
 
     return savecount(network, t, 0)
 
@@ -388,7 +388,9 @@ def train_diff(t):
     t.orig_latent = image2latent(t,t.images[0]).to(t.train_model_precision).repeat_interleave(t.train_batch_size,0)
     t.targ_latent = image2latent(t,t.images[1]).to(t.train_model_precision)
 
-    del t.vae, t.text_model
+    del t.vae
+    if "BASE" not in t.network_blocks:
+        del t.text_model
     flush()
 
     print("Copy Machine Start")
@@ -446,14 +448,14 @@ def make_diff_lora(t, copy):
         with network, t.a.autocast():
             noise_pred = t.unet(noisy_latents, timesteps, torch.cat([t.orig_cond] * batch_size), added_cond_kwargs = added_cond_kwargs).sample
 
-        loss, loss_ema, loss_velocity = process_loss(t, noise_pred, noise, timesteps, loss_ema, loss_velocity)
+        loss, loss_ema, loss_velocity = process_loss(t, noise_pred, noise, timesteps, loss_ema, loss_velocity, copy)
 
         c_lrs = [f"{x:.2e}" for x in lr_scheduler.get_last_lr()]
 
         pbar.set_description(f"Loss EMA * 1000: {loss_ema * 1000:.4f}, Loss Velosity: {loss_velocity * 1000:.4f}, Current LR: "+", ".join(c_lrs))   
         pbar.update(1)
         if t.logging_save_csv:
-            savecsv(pbar.n, loss_ema, [x.cpu().item() if isinstance(x, torch.Tensor)  else x for x in lr_scheduler.get_last_lr()],t.csvpath, copy = copy)
+            savecsv(t, pbar.n, loss_ema, [x.cpu().item() if isinstance(x, torch.Tensor)  else x for x in lr_scheduler.get_last_lr()],t.csvpath, copy = copy)
 
         t.a.backward(loss)
         optimizer.step()
@@ -472,6 +474,118 @@ def make_diff_lora(t, copy):
     return network, result
 
 
+def train_diff2(t):
+    global stoptimer
+    stoptimer = 0
+
+    if t.mode == "ADDifT":
+        t.orig_latent = image2latent(t,t.images[0]).to(t.train_model_precision)
+        t.targ_latent = image2latent(t,t.images[1]).to(t.train_model_precision)
+        data = dataset.LatentsConds(t, [([t.orig_latent, None, t.orig_cond, t.targ_vector],[t.targ_latent,None, t.targ_cond, t.targ_vector])])
+        dataloaders = [dataset.DataLoader(data, batch_size=t.train_batch_size, shuffle=True)]
+    else:
+        t.a.print("Preparing image latents and text-conditional...")
+        dataloaders = dataset.make_dataloaders(t)
+    t.dataloader = dataset.ContinualRandomDataLoader(dataloaders)
+    t.dataloader = (t.a.prepare(t.dataloader))
+
+    t.a.print("Train Multi-Difference Start")
+
+    if not t.dataloader.data:
+        return "No data!"
+
+    del t.vae
+    if "BASE" not in t.network_blocks:
+        del t.text_model
+    flush()
+  
+    network, optimizer, lr_scheduler = create_network(t)
+
+    loss_ema = None
+    noise = None
+    loss_velocity = None
+
+    pbar = tqdm(range(t.train_iterations))
+    epoch = 0
+    while t.train_iterations >= pbar.n + 1:
+        for batch in t.dataloader:
+            orig_latent = batch["orig_latent"]
+            targ_latent = batch["targ_latent"]
+
+            batch_size = orig_latent.shape[0]
+ 
+            orig_conds1 = batch["orig_conds1"] if "orig_conds1" in batch else torch.cat([t.orig_cond] * batch_size)
+            orig_conds2 = batch["orig_conds2"] if "orig_conds2" in batch else (torch.cat([t.orig_vector] * batch_size) if isinstance(t.orig_vector, torch.Tensor) else None)
+            targ_conds1 = batch["targ_conds1"] if "targ_conds1" in batch else torch.cat([t.targ_cond] * batch_size)
+            targ_conds2 = batch["targ_conds2"] if "targ_conds2" in batch else (torch.cat([t.targ_vector] * batch_size) if isinstance(t.targ_vector, torch.Tensor) else None)
+
+            orig_added_cond_kwargs = get_added_cond_kwargs(t, orig_conds2, batch_size, size = [*orig_latent.shape[2:4]]) if orig_conds2 is not None else None 
+            targ_added_cond_kwargs = get_added_cond_kwargs(t, targ_conds2, batch_size, size = [*targ_latent.shape[2:4]]) if targ_conds2 is not None else None 
+
+            optimizer.zero_grad()
+            noise = torch.randn_like(orig_latent) 
+
+            turn = pbar.n % 2 == 0 
+
+            #t.train_min_timesteps = int(500 * (pbar.n * 2 / t.train_iterations)) if 1 > pbar.n * 2 / t.train_iterations else 500
+            #t.train_max_timesteps = int(750 + 250 * (1 - (pbar.n * 2/ (t.train_iterations * 2)))) if 1 > pbar.n * 2 / t.train_iterations else 750
+            #print(t.train_min_timesteps, t.train_max_timesteps)
+            if turn:
+                span = (t.train_max_timesteps - t.train_min_timesteps) /10
+                index = pbar.n % 10 + 1
+                time_min = t.train_min_timesteps + span * index
+                time_max = t.train_min_timesteps + span * (index + 1)
+
+                if not (time_min > time_max):
+                    time_max = time_min + 1
+
+            timesteps = torch.randint(int(999 if time_min > 999 else time_min), int(time_max if 1000 > time_max else 1000), ((1 if t.train_fixed_timsteps_in_batch else batch_size),),device=CUDA) 
+            timesteps = torch.cat([timesteps.long()] * (batch_size if t.train_fixed_timsteps_in_batch else 1))
+
+            if 0 > t.diff_alt_ratio and not turn:
+                targ_latent = orig_latent = noise
+
+            orig_noisy_latents = t.noise_scheduler.add_noise(orig_latent if turn else targ_latent, noise, timesteps)
+            targ_noisy_latents = t.noise_scheduler.add_noise(targ_latent if turn else orig_latent, noise, timesteps)
+
+            with torch.no_grad(), t.a.autocast(): 
+                orig_noise_pred = t.unet(orig_noisy_latents, timesteps, orig_conds1, added_cond_kwargs = orig_added_cond_kwargs).sample 
+
+            network.set_multiplier(0.25 if turn else - 0.25 * abs(t.diff_alt_ratio))
+            with t.a.autocast():
+                targ_noise_pred = t.unet(targ_noisy_latents, timesteps, targ_conds1, added_cond_kwargs = targ_added_cond_kwargs).sample
+
+            network.set_multiplier(0)
+
+            if t.diff_use_diff_mask and "mask" in batch:
+                targ_noise_pred = targ_noise_pred * batch["mask"].to(CUDA) 
+                orig_noise_pred = orig_noise_pred * batch["mask"].to(CUDA)   
+
+            loss, loss_ema, loss_velocity = process_loss(t, targ_noise_pred, orig_noise_pred, timesteps, loss_ema, loss_velocity)
+
+            c_lrs = [f"{x:.2e}" for x in lr_scheduler.get_last_lr()]
+
+            pbar.set_description(f"Loss EMA * 1000: {loss_ema * 1000:.4f}, Loss Velosity: {loss_velocity * 1000:.4f}, Current LR: "+", ".join(c_lrs) + f", Epoch: {epoch}")   
+            pbar.update(1)
+            if t.logging_save_csv:
+                savecsv(t, pbar.n, loss_ema, [x.cpu().item() if isinstance(x, torch.Tensor)  else x for x in lr_scheduler.get_last_lr()],t.csvpath)
+
+            t.a.backward(loss)
+            optimizer.step()
+            lr_scheduler.step()
+            optimizer.zero_grad()
+
+            flush()
+            
+            result = finisher(network, t, pbar.n)
+            if result is not None:
+                del optimizer, lr_scheduler
+                return result
+
+        epoch += 1
+
+    return savecount(network, t, 0)
+
 #### Prepare LoRA, Optimizer, lr_scheduler, Save###############################################
 def flush():
     torch.cuda.empty_cache()
@@ -486,21 +600,22 @@ def create_network(t):
     if t.is_schedulefree:
         optimizer.train()
     else:
-        lr_scheduler = load_lr_scheduler(t, optimizer)
+        lr_scheduler = trainer.load_lr_scheduler(t, optimizer)
 
     print(f"Optimizer : {type(optimizer).__name__}")
     print(f"Optimizer Settings : {t.train_optimizer_settings}")
 
     network, optimizer, lr_scheduler = t.a.prepare(network, optimizer, None if t.is_schedulefree else lr_scheduler)
 
-    return network, optimizer, DummyScheduler() if t.is_schedulefree else lr_scheduler
+    return network, optimizer, DummyScheduler(optimizer) if t.is_schedulefree else lr_scheduler
 
 class DummyScheduler():
-    def __init__(self):
+    def __init__(self, optimizer):
+        self.optimizer = optimizer
         pass
 
     def get_last_lr(self):
-        return [0, 0]
+        return [p["scheduled_lr"] for p in self.optimizer.param_groups]
 
     def step(self):
         pass
@@ -511,21 +626,6 @@ def load_network(t):
         return LoRANetwork(t).to(CUDA, dtype=t.train_lora_precision)
     else:
         return LycorisNetwork(t).to(CUDA, dtype=t.train_lora_precision)
-
-def load_lr_scheduler(t, optimizer):
-    if t.train_optimizer == "adafactor":
-        return AdafactorSchedule(optimizer)
-    else:
-        return get_scheduler(
-            name = t.train_lr_scheduler,
-            optimizer = optimizer,
-            step_rules = t.train_lr_step_rules,
-            num_warmup_steps = t.train_lr_warmup_steps if t.train_lr_warmup_steps > 0 else 0,
-            num_training_steps = t.train_iterations,
-            num_cycles = t.train_lr_scheduler_num_cycles if t.train_lr_scheduler_num_cycles > 0 else 1,
-            power = t.train_lr_scheduler_power if t.train_lr_scheduler_power > 0 else 1.0,
-            **t.train_lr_scheduler_settings
-        )
 
 def stop_time(save):
     global stoptimer
@@ -563,8 +663,13 @@ def makesavelist(t):
     else:
         t.save_list = []
 
-def process_loss(t, original, target, timesteps, loss_ema, loss_velocity):
-    loss = torch.nn.functional.mse_loss(original.float(), target.float(), reduction="none")
+def process_loss(t, original, target, timesteps, loss_ema, loss_velocity, copy = False):
+    if t.train_loss_function == "MSE":
+        loss = torch.nn.functional.mse_loss(original.float(), target.float(), reduction="none")
+    if t.train_loss_function == "L1":
+        loss = torch.nn.functional.l1_loss(original.float(), target.float(), reduction="none")
+    if t.train_loss_function == "Smooth-L1":
+        loss = torch.nn.functional.smooth_l1_loss(original.float(), target.float(), reduction="none")
     loss = loss.mean([1, 2, 3])
 
     if t.train_snr_gamma > 0:
@@ -603,15 +708,14 @@ def image2latent(t,image):
     with torch.no_grad():
         latent = t.vae.encode(image) 
         if isinstance(latent, torch.Tensor):
-            return latent * t.vae_scale_factor
+            return (latent - t.vae_shift_factor) * t.vae_scale_factor
         else:
-            return latent.latent_dist.sample() * t.vae_scale_factor
-
+            return (latent.latent_dist.sample() - t.vae_shift_factor) * t.vae_scale_factor
 
 def text2cond(t, prompt):
     input = SdConditioning([prompt], width=t.image_size[0], height=t.image_size[1])
     cond = prompt_parser.get_learned_conditioning(shared.sd_model,input,1)
-    if t.isxl:
+    if t.is_sdxl:
         return [cond[0][0].cond["crossattn"].unsqueeze(0).to(CUDA, dtype=t.train_model_precision),
                 (cond[0][0].cond["vector"][:1280].unsqueeze(0).to(CUDA, dtype=t.train_model_precision))]
     else:
@@ -640,18 +744,24 @@ def get_added_cond_kwargs(t, projection, batch_size, size = None):
 
 #### Debug, Logging ####################################################
 def check_requires_grad(model: torch.nn.Module):
-    for name, module in list(model.named_modules())[:5]:
+    for name, module in list(model.named_modules())[:5] + list(model.named_modules())[5:]:
         if len(list(module.parameters())) > 0:
             print(f"Module: {name}")
             for name, param in list(module.named_parameters())[:2]:
                 print(f"    Parameter: {name}, Requires Grad: {param.requires_grad}")
 
 def check_training_mode(model: torch.nn.Module):
-    for name, module in list(model.named_modules())[:5]:
+    for name, module in list(model.named_modules())[:5] + list(model.named_modules())[5:]:
         print(f"Module: {name}, Training Mode: {module.training}")
 
-def savecsv(step, loss, lr, csvpath, copy=False):
-    header = ["Step", "Loss"] + ["Learning Rate " + str(i+1) for i in range(len(lr))]
+CSVHEADS = ["network_rank", "network_alpha", "train_learning_rate", "train_iterations", "train_lr_scheduler", "model_version", "train_optimizer", "save_lora_name"]
+
+def savecsv(t, step, loss, lr, csvpath, copy=False):
+    header = []
+    for key in CSVHEADS:
+        header.append([key, getattr(t, key, "")])
+
+    header.append(["Step", "Loss"] + ["Learning Rate " + str(i+1) for i in range(len(lr))])
 
     if copy:
         csvpath = csvpath.replace(".csv", "_copy.csv")
@@ -665,7 +775,8 @@ def savecsv(step, loss, lr, csvpath, copy=False):
     with open(csvpath, 'a', newline='') as csvfile:
         writer = csv.writer(csvfile)
         if not file_exists:
-            writer.writerow(header)
+            for head in header:
+                writer.writerow(head)
         writer.writerow([step, loss] + lr)
 
 #### Metadata ####################################################
@@ -686,7 +797,7 @@ def metadator(t):
         "ss_lr_warmup_steps":t.train_lr_warmup_steps,
         "ss_lr_scheduler_num_cycles": t.train_lr_scheduler_num_cycles,
         "ss_lr_scheduler_power": t.train_lr_scheduler_power,
-        "ss_v2": bool(t.isv2),
+        "ss_v2": bool(t.is_sd2),
         "ss_base_model_version": t.model_version,
         "ss_seed": t.train_seed,
         "ss_optimizer": t.train_optimizer,

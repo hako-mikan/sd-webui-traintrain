@@ -14,8 +14,10 @@ BLOCKID26=["BASE","IN00","IN01","IN02","IN03","IN04","IN05","IN06","IN07","IN08"
 BLOCKID17=["BASE","IN01","IN02","IN04","IN05","IN07","IN08","M00","OUT03","OUT04","OUT05","OUT06","OUT07","OUT08","OUT09","OUT10","OUT11"]
 BLOCKID12=["BASE","IN04","IN05","IN07","IN08","M00","OUT00","OUT01","OUT02","OUT03","OUT04","OUT05"]
 BLOCKID20=["BASE","IN00","IN01","IN02","IN03","IN04","IN05","IN06","IN07","IN08","M00","OUT00","OUT01","OUT02","OUT03","OUT04","OUT05","OUT06","OUT07","OUT08"]
-BLOCKNUMS = [12,17,20,26]
-BLOCKIDS=[BLOCKID12,BLOCKID17,BLOCKID20,BLOCKID26]
+BLOCKIDFLUX = ["CLIP", "T5", "IN"] + ["D{:002}".format(x) for x in range(19)] + ["S{:002}".format(x) for x in range(38)] + ["OUT"] # Len: 61
+BLOCKIDSD35 = ["CLIPG", "CLIPL", "T5", "IN"] + ["J{:002}".format(x) for x in range(24)] + ["OUT"] #4 + 24 + 1 = 29
+BLOCKNUMS = [12,17,20,26, len(BLOCKIDFLUX),  len(BLOCKIDSD35)] #61, 29
+BLOCKIDS=[BLOCKID12,BLOCKID17,BLOCKID20,BLOCKID26,BLOCKIDFLUX]
 
 BLOCKS=["encoder",
 "diffusion_model_input_blocks_0_",
@@ -66,11 +68,15 @@ LORA_PREFIX_TEXT_ENCODER2 = "lora_te2"
 LORA_LINEAR = ["Linear", "LoRACompatibleLinear"]
 LORA_CONV = ["Conv2d", "LoRACompatibleConv"]
 
+MMDIT_TARGET_REPLACE_MODULE = ["JointTransformerBlock", "FluxTransformerBlock", "FluxSingleTransformerBlock", "AuraFlowJointTransformerBlock", "AuraFlowSingleTransformerBlock"]
+LORA_PREFIX_MMDIT = 'lora_transformer'
+
 PREFIXLIST = [
     LORA_PREFIX_UNET,
     LORA_PREFIX_TEXT_ENCODER,
     LORA_PREFIX_TEXT_ENCODER1,
-    LORA_PREFIX_TEXT_ENCODER2
+    LORA_PREFIX_TEXT_ENCODER2,
+    LORA_PREFIX_MMDIT
 ]
 
 TRAINING_METHODS = Literal[
@@ -170,19 +176,23 @@ class LoRANetwork(nn.Module):
 
         self.module = LoRAModule
 
-        t.lora_unet_target = UNET_TARGET_REPLACE_MODULE_C3 if t.network_type == "c3lier" else UNET_TARGET_REPLACE_MODULE
+        if t.is_dit:
+            t.lora_unet_target = MMDIT_TARGET_REPLACE_MODULE
+        else:
+            t.lora_unet_target = UNET_TARGET_REPLACE_MODULE_C3 if t.network_type == "c3lier" else UNET_TARGET_REPLACE_MODULE
+
         t.lora_te_target = TEXT_ENCODER_TARGET_REPLACE_MODULE
 
-        self.unet_loras = self.load_fromfile(t, 0) if t.diff_load_1st_pass else self.create_modules(t, 0)
+        self.unet_loras = self.load_fromfile(t, 5 if t.is_dit else 0) if t.network_resume else self.create_modules(t, 5 if t.is_dit else 0)
         
-        if "BASE" in t.network_blocks and t.mode == "LoRA":
-            self.te_loras = self.load_fromfile(t, 2 if t.isxl else 1) if t.diff_load_1st_pass else self.create_modules(t, 2 if t.isxl else 1)
-            if t.isxl:
-                self.te_loras += self.load_fromfile(t, 3) if t.diff_load_1st_pass else self.create_modules(t, 3)
+        if "BASE" in t.network_blocks:# and t.mode == "LoRA":
+            self.te_loras = self.load_fromfile(t, 2 if t.is_te2 else 1) if t.network_resume else self.create_modules(t, 2 if t.is_te2 else 1)
+            if t.is_te2:
+                self.te_loras += self.load_fromfile(t, 3) if t.network_resume else self.create_modules(t, 3)
         else:
             self.te_loras = []
         
-        print(f" Create LoRA for U-Net : {len(self.unet_loras)} modules.")
+        print(f" Create LoRA for U-Net or DiT: {len(self.unet_loras)} modules.")
         print(f" Create LoRA for Textencoder : {len(self.te_loras)} modules.")
 
         lora_names = set()
@@ -210,9 +220,9 @@ class LoRANetwork(nn.Module):
         if ut == 0:
             root_modules = t.unet.named_modules()
         elif ut ==1 or ut == 2:
-            root_modules = t.text_model.text_encoder.named_modules()
+            root_modules = t.text_model.text_encoders[0].named_modules()
         elif ut ==3:
-            root_modules = t.text_model.text_encoder_2.named_modules()
+            root_modules = t.text_model.text_encoders[1].named_modules()
 
         for name, module in root_modules:
             if module.__class__.__name__ in target:
@@ -234,7 +244,7 @@ class LoRANetwork(nn.Module):
                         lora_name = prefix + "." + name + "." + child_name
                         lora_name = lora_name.replace(".", "_")
 
-                        key = convert_diffusers_name_to_compvis(lora_name,t.isv2)
+                        key = convert_diffusers_name_to_compvis(lora_name,t.is_sd2)
 
                         currentblock = "BASE"
                         for i,block in enumerate(BLOCKS):
@@ -263,7 +273,7 @@ class LoRANetwork(nn.Module):
     def load_fromfile(self, t, ut):
         loras = []
 
-        file = t.diff_load_1st_pass
+        file = t.network_resume
 
         prefix = PREFIXLIST[ut]
 
@@ -272,9 +282,9 @@ class LoRANetwork(nn.Module):
         if ut == 0:
             root_modules = t.unet.named_modules()
         elif ut ==1 or ut == 2:
-            root_modules = t.text_model.text_encoder.named_modules()
+            root_modules = t.text_model.text_encoders[0].named_modules()
         elif ut ==3:
-            root_modules = t.text_model.text_encoder_2.named_modules()
+            root_modules = t.text_model.text_encoders[1].named_modules()
 
         if os.path.splitext(file)[1] == ".safetensors":
             from safetensors.torch import load_file, safe_open
@@ -338,6 +348,11 @@ class LoRANetwork(nn.Module):
             if not key.startswith("lora"):
                 del state_dict[key]
 
+        if t.network_strength != 1:
+            for key in list(state_dict.keys()):
+                if "lora_up" in key or "lora_down" in key:
+                    state_dict[key] = state_dict[key] * t.network_strength ** 0.5
+
         base, ext = os.path.splitext(file)
         attempt = 0
         while True:
@@ -356,7 +371,6 @@ class LoRANetwork(nn.Module):
         
         return file
 
-
     def __enter__(self):
         for lora in self.unet_loras + self.te_loras:
             lora.multiplier = 1.0
@@ -365,16 +379,15 @@ class LoRANetwork(nn.Module):
         for lora in self.unet_loras + self.te_loras:
             lora.multiplier = 0
 
-    def check_weight(self):
+    def check_weight(self, te = False):
         sums = []
-        for lora in self.unet_loras:
-            sums.append(torch.sum(lora.lora_up.weight))
+        for lora in self.te_loras if te else self.unet_loras:
+            sums.append(torch.sum(lora.lora_up.weight).item())
         return sums
 
     def set_multiplier(self, num):
-        for lora in self.unet_loras:
+        for lora in self.unet_loras + self.te_loras:
             lora.multiplier = num
-
 
 from lycoris.modules.loha import LohaModule
 from lycoris.modules.norms import NormModule
@@ -554,9 +567,9 @@ class LycorisNetwork(torch.nn.Module):
             if ut == 0:
                 root_modules = t.unet.named_modules()
             elif ut ==1 or ut == 2:
-                root_modules = t.text_model.text_encoder.named_modules()
+                root_modules = t.text_model.text_encoders[0].named_modules()
             elif ut ==3:
-                root_modules = t.text_model.text_encoder_2.named_modules()
+                root_modules = t.text_model.text_encoders[1].named_modules()
 
             loras = []
             next_config = {}
@@ -597,16 +610,16 @@ class LycorisNetwork(torch.nn.Module):
         self.apply_block_weight(t)
         
         if "BASE" in t.network_blocks and t.mode == "LoRA":
-            self.te_loras = create_modules(self, t, 2 if t.isxl else 1)
-            if t.isxl:
+            self.te_loras = create_modules(self, t, 2 if t.is_te2 else 1)
+            if t.is_te2:
                 self.te_loras += create_modules(self, t, 3)
         else:
             self.te_loras = []
 
-        if t.diff_load_1st_pass:
-            self.load_fromfile(t.diff_load_1st_pass)
+        if t.network_resume:
+            self.load_fromfile(t.network_resume)
 
-        print(f"Create LyCORIS U-Net: {len(self.unet_loras)} modules.")
+        print(f"Create LyCORIS U-Net or DiT: {len(self.unet_loras)} modules.")
         print(f"Create LyCORIS TextEncoder: {len(self.te_loras)} modules.")
 
         algo_table = {}
@@ -637,7 +650,7 @@ class LycorisNetwork(torch.nn.Module):
     def apply_block_weight(self, t):
         new_unet = []
         for lora in self.unet_loras:
-            key =  convert_diffusers_name_to_compvis(lora.lora_name, t.isv2)
+            key =  convert_diffusers_name_to_compvis(lora.lora_name, t.is_sd2)
             currentblock = "BASE"
             for i,block in enumerate(BLOCKS):
                 if block in key:
@@ -723,11 +736,15 @@ class LycorisNetwork(torch.nn.Module):
 
     def __enter__(self):
         for lora in self.unet_loras + self.te_loras:
-            lora.multiplier = 1.0
+            lora.multiplier = 1
 
     def __exit__(self, exc_type, exc_value, tb):
         for lora in self.unet_loras + self.te_loras:
             lora.multiplier = 0
+
+    def set_multiplier(self, num):
+        for lora in self.unet_loras + self.te_loras:
+            lora.multiplier = num
 
     def prepare_grad_etc(self):
         self.requires_grad_(True)
@@ -761,24 +778,35 @@ class LycorisNetwork(torch.nn.Module):
             torch.save(state_dict, file)
 
 ###forwards####################################
-def loha_forward(self, x = None, scale = None):
+def loha_forward(self, x: torch.Tensor, *args, **kwargs):
     if self.module_dropout and self.training:
         if torch.rand(1) < self.module_dropout:
             return self.op(
                 x,
                 self.org_module[0].weight.data,
-                None
-                if self.org_module[0].bias is None
-                else self.org_module[0].bias.data,
+                (
+                    None
+                    if self.org_module[0].bias is None
+                    else self.org_module[0].bias.data
+                ),
             )
-    weight = (
-        self.org_module[0].weight.data.to(x.device, dtype=self.hada_w1_a.dtype)
-        + self.get_weight(self.org_module[0].weight.data)
-        * self.scalar
-        * self.multiplier
-    )
-    bias = None if self.org_module[0].bias is None else self.org_module[0].bias.data
-    return self.op(x, weight.view(self.shape), bias, **self.extra_args)
+    if self.bypass_mode:
+        return self.bypass_forward(x, scale=self.multiplier)
+    else:
+        diff_weight = self.get_weight(self.shape).to(self.dtype) * self.scalar
+        weight = self.org_module[0].weight.data.to(self.dtype)
+        if self.wd:
+            weight = self.apply_weight_decompose(
+                weight + diff_weight, self.multiplier
+            )
+        else:
+            weight = weight + diff_weight * self.multiplier
+        bias = (
+            None
+            if self.org_module[0].bias is None
+            else self.org_module[0].bias.data
+        )
+        return self.op(x, weight, bias, **self.kw_dict)
 
 forwards = {"loha": loha_forward}
 

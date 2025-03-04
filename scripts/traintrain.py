@@ -17,7 +17,7 @@ jsonspath = trainer.jsonspath
 logspath = trainer.logspath
 presetspath = trainer.presetspath
 
-MODES = ["LoRA", "iLECO", "Difference"]
+MODES = ["LoRA", "iLECO", "Difference", "ADDifT", "Multi-ADDifT"]
 
 BLOCKID26=["BASE","IN00","IN01","IN02","IN03","IN04","IN05","IN06","IN07","IN08","IN09","IN10","IN11","M00","OUT00","OUT01","OUT02","OUT03","OUT04","OUT05","OUT06","OUT07","OUT08","OUT09","OUT10","OUT11"]
 BLOCKID17=["BASE","IN01","IN02","IN04","IN05","IN07","IN08","M00","OUT03","OUT04","OUT05","OUT06","OUT07","OUT08","OUT09","OUT10","OUT11"]
@@ -26,7 +26,8 @@ BLOCKID20=["BASE","IN00","IN01","IN02","IN03","IN04","IN05","IN06","IN07","IN08"
 
 PRECISION_TYPES = ["fp32", "bf16", "fp16", "float32", "bfloat16", "float16"]
 NETWORK_TYPES = ["lierla", "c3lier","loha"]
-NETWORK_DIMS = [str(2**x) for x in range(10)]
+NETWORK_DIMS = [str(2**x) for x in range(11)]
+NETWORK_ALPHAS = [str(2**(x-5)) for x in range(16)]
 NETWORK_ELEMENTS = ["Full", "CrossAttention", "SelfAttention"]
 IMAGESTEPS = [str(x*64) for x in range(10)]
 SEP = "--------------------------"
@@ -37,28 +38,36 @@ OPTIMIZERS = ["AdamW", "AdamW8bit", "AdaFactor", "Lion", "Prodigy", SEP,
                "CAME", "Tiger", "AdamMini",
                "PagedAdamW", "PagedAdamW32bit", "SGDNesterov", "Adam",]
 LOSS_REDUCTIONS = ["none", "mean"]
+LOSS_FUNCTIONS = ["MSE", "L1", "Smooth-L1"]
 
-SCHEDULERS = ["linear", "cosine", "cosine_with_restarts" ,"polynomial", "constant", "constant_with_warmup" ,"piecewise_constant"]
+SCHEDULERS = ["cosine_annealing", "cosine_annealing_with_restarts", "linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup", "piecewise_constant", "exponential", "step", "multi_step", "reduce_on_plateau", "cyclic", "one_cycle"]
 #NOISE_SCHEDULERS = ["Euler A", "DDIM", "DDPM", "LMSD"]
 NOISE_SCHEDULERS = ["DDIM", "DDPM", "PNDM", "LMS", "Euler", "Euler a", "DPMSolver", "DPMsingle", "Heun", "DPM 2", "DPM 2 a"]
 TARGET_MODULES = ["Both", "U-Net", "Text Encoder"]
 
-ALL = [True,True,True,True]
-LORA = [True,False,False,False]
-ILECO = [False,True,False,False]
-NDIFF =  [True,True,False,False]
-DIFF = [False,False,True,True]
-DIFF1 = [False,False,True,False]
-DIFF2 = [False,False,False,True]
-NDIFF2 = [True,True,True,False]
+ALL = [True,True,True,True,True,True]
+LORA = [True,False,False,False,False,False]
+ILECO = [False,True,False,False,False,False]
+NDIFF =  [True,True,False,False,False,True]
+DIFF = [False,False,True,True,True,True]
+DIFF1ST = [False,False,True,False,False,False]
+DIFF2ND = [False,False,False,True,False,False]
+DIFF2 = [False,False,True,False,False,True]
+LORA_MDIFF = [True,False,True,False,False,True]
+LORA_MDIFF2 = [True,False,True,False,True,True]
+NDIFF2 = [True,True,True,False,True,True]
+MDIFF = [False,False,False,False,True,True]
+MDIFF2 = [False,False,False,False,False,True]
+ALLN = [False,False,False,False,False,False]
 
 #requiered parameters
-use_2nd_pass_settings = ["use_2nd_pass_settings", "CH", None, False, bool, DIFF2]
-lora_data_directory = ["lora_data_directory","TX",None,"", str, LORA]
-lora_trigger_word = ["lora_trigger_word","TX",None,"", str, LORA]
+use_2nd_pass_settings = ["use_2nd_pass_settings", "CH", None, False, bool, DIFF2ND]
+lora_data_directory = ["lora_data_directory","TX",None,"", str, LORA_MDIFF]
+lora_trigger_word = ["lora_trigger_word","TX",None,"", str, LORA_MDIFF2]
+diff_target_name = ["diff_target_name","TX", None, "", str, MDIFF2]
 network_type = ["network_type","DD",NETWORK_TYPES,NETWORK_TYPES[0],str,ALL]
 network_rank = ["network_rank","DD",NETWORK_DIMS[2:],"16",int,ALL]
-network_alpha = ["network_alpha","DD",NETWORK_DIMS,"8",int,ALL]
+network_alpha = ["network_alpha","DD",NETWORK_ALPHAS,"8",float,ALL]
 network_element = ["network_element","DD",NETWORK_ELEMENTS,None,str,ALL]
 image_size = ["image_size(height, width)", "TX",None,512,str,NDIFF]
 train_iterations = ["train_iterations","TX",None,1000,int,ALL]
@@ -73,26 +82,37 @@ use_gradient_checkpointing = ["use_gradient_checkpointing","CH",None,False,bool,
 
 #option parameters
 network_conv_rank = ["network_conv_rank","DD",["0"] + NETWORK_DIMS[2:],"0",int,ALL]
-network_conv_alpha = ["network_conv_alpha","DD",["0"] + NETWORK_DIMS,"0",int,ALL]
+network_conv_alpha = ["network_conv_alpha","DD",["0"] + NETWORK_ALPHAS,"0",float,ALL]
+network_resume = ["network_resume","TX", None, "", str, LORA_MDIFF]
+network_train_text_encoder =  ["network_train_text_encoder", "CH",None,False,bool,ILECO]
+train_loss_function =["train_loss_function","DD",LOSS_FUNCTIONS,"MSE",str,ALL]
 train_seed = ["train_seed", "TX",None,-1,int, ALL]
+train_min_timesteps = ["train_min_timesteps", "TX",None,0,int, ALL]
+train_max_timesteps = ["train_max_timesteps", "TX",None,1000,int, ALL]
 train_textencoder_learning_rate = ["train_textencoder_learning_rate","TX",None,"",float,LORA]
 train_model_precision = ["train_model_precision","DD",PRECISION_TYPES[:3],"fp16",str,ALL]
 train_lora_precision = ["train_lora_precision","DD",PRECISION_TYPES[:3],"fp32",str,ALL]
-image_buckets_step = ["image_buckets_step", "DD",IMAGESTEPS,"256",int,LORA]
-image_min_length = ["image_min_length", "TX",None,512,int,LORA]
-image_max_ratio = ["image_max_ratio", "TX",None,2,float,LORA]
-sub_image_num = ["sub_image_num", "TX",None,0,int,LORA]
-image_mirroring =  ["image_mirroring", "CH",None,False,bool,LORA]
-image_use_filename_as_tag =  ["image_use_filename_as_tag", "CH",None,False,bool,LORA]
-image_disable_upscale = ["image_disable_upscale", "CH",None,False,bool,LORA]
+image_buckets_step = ["image_buckets_step", "DD",IMAGESTEPS,"256",int,LORA_MDIFF]
+image_num_multiply = ["image_num_multiply", "TX",None,1,int,LORA_MDIFF]
+image_min_length = ["image_min_length", "TX",None,512,int,LORA_MDIFF]
+image_max_ratio = ["image_max_ratio", "TX",None,2,float,LORA_MDIFF]
+sub_image_num = ["sub_image_num", "TX",None,0,int,LORA_MDIFF]
+image_mirroring =  ["image_mirroring", "CH",None,False,bool,LORA_MDIFF]
+image_use_filename_as_tag =  ["image_use_filename_as_tag", "CH",None,False,bool,LORA_MDIFF]
+image_disable_upscale = ["image_disable_upscale", "CH",None,False,bool,LORA_MDIFF]
 save_per_steps = ["save_per_steps", "TX",None,0,int,ALL]
 save_precision = ["save_precision","DD",PRECISION_TYPES[:3],"fp16",str,ALL]
 save_overwrite = ["save_overwrite", "CH",None,False,bool,ALL]
 save_as_json = ["save_as_json", "CH",None,False,bool,NDIFF2]
 
-diff_save_1st_pass = ["diff_save_1st_pass", "CH",None,False,bool,DIFF1]
-diff_1st_pass_only = ["diff_1st_pass_only", "CH",None,False,bool,DIFF1]
-diff_load_1st_pass = ["diff_load_1st_pass","TX", None, "", str, DIFF1]
+diff_save_1st_pass = ["diff_save_1st_pass", "CH",None,False,bool,DIFF1ST]
+diff_1st_pass_only = ["diff_1st_pass_only", "CH",None,False,bool,DIFF1ST]
+diff_load_1st_pass = ["diff_load_1st_pass","TX", None, "", str, DIFF1ST]
+diff_revert_original_target = ["diff_revert_original_target","CH", None, False, bool, MDIFF]
+diff_use_diff_mask = ["diff_use_diff_mask","CH", None, False, bool, MDIFF]
+diff_use_fixed_noise = ["diff_use_fixed_noise","CH", None, False, bool, MDIFF]
+network_strength  = ["network_strength","TX", None, 1, float, ALL]
+
 train_lr_step_rules = ["train_lr_step_rules","TX",None,"",str,ALL]
 train_lr_warmup_steps = ["train_lr_warmup_steps","TX",None,0,int,ALL]
 train_lr_scheduler_num_cycles = ["train_lr_scheduler_num_cycles","TX",None,1,int,ALL]
@@ -104,6 +124,7 @@ image_use_transparent_background_ajust = ["image_use_transparent_background_ajus
 logging_verbose = ["logging_verbose","CH",None,False,bool,NDIFF2]
 logging_save_csv = ["logging_save_csv","CH",False,"",bool,NDIFF2]
 model_v_pred = ["model_v_pred", "CH",None,False,bool,ALL]
+diff_alt_ratio  = ["diff_alt_ratio","TX",None,"1",float,MDIFF]
 
 network_blocks = ["network_blocks(BASE = TextEncoder)","CB",BLOCKID26,BLOCKID26,list,ALL]
 
@@ -117,19 +138,19 @@ gradient_accumulation_steps = ["gradient_accumulation_steps","TX",None,"1",str,A
 gen_noise_scheduler = ["gen_noise_scheduler", "DD",NOISE_SCHEDULERS,NOISE_SCHEDULERS[6],str,NDIFF2]
 lora_train_targets = ["lora_train_targets","RD",TARGET_MODULES,TARGET_MODULES[0], str, LORA]
 logging_use_tensorboard = ["logging_use_tensorboard","CH",False,"",bool,NDIFF2]
-train_min_timesteps = ["train_min_timesteps", "TX",None,0,int,ALL]
-train_max_timesteps = ["train_max_timesteps", "TX",None,1000,int,ALL]
 
-r_column1 = [network_type,network_rank,network_alpha,lora_data_directory,lora_trigger_word]
+r_column1 = [network_type,network_rank,network_alpha,lora_data_directory,diff_target_name,lora_trigger_word]
 r_column2 = [image_size ,train_iterations,train_batch_size ,train_learning_rate]
 r_column3 = [train_optimizer,train_optimizer_settings, train_lr_scheduler,train_lr_scheduler_settings, save_lora_name,use_gradient_checkpointing]
 row1 = [network_blocks]
 
-o_column1 = [network_conv_rank,network_conv_alpha,network_element,image_buckets_step,
+o_column1 = [network_resume,network_strength,network_conv_rank,network_conv_alpha,network_element,network_train_text_encoder,image_buckets_step,image_num_multiply,
                      image_min_length,image_max_ratio,sub_image_num,image_mirroring,
-                     image_use_filename_as_tag,image_disable_upscale,image_use_transparent_background_ajust,train_fixed_timsteps_in_batch]
-o_column2 = [train_textencoder_learning_rate,train_seed,train_lr_step_rules, train_lr_warmup_steps, train_lr_scheduler_num_cycles,train_lr_scheduler_power, 
-                     train_snr_gamma, save_per_steps]
+                     image_use_filename_as_tag,image_disable_upscale,train_fixed_timsteps_in_batch]
+                     
+o_column2 = [train_textencoder_learning_rate,train_seed,train_min_timesteps,train_max_timesteps,train_loss_function,train_lr_step_rules, train_lr_warmup_steps, train_lr_scheduler_num_cycles,train_lr_scheduler_power, 
+                     train_snr_gamma,save_per_steps,diff_alt_ratio,
+                     diff_revert_original_target,diff_use_diff_mask]
 o_column3 = [train_model_precision, train_lora_precision,save_precision,diff_load_1st_pass, diff_save_1st_pass,diff_1st_pass_only,
                     logging_save_csv,logging_verbose,save_overwrite, save_as_json,model_v_pred]
 
@@ -383,11 +404,15 @@ def on_ui_tabs():
 
         def change_the_mode(mode):
             mode = MODES.index(mode)
-            out = [x[5][mode] for x in trainer.all_configs]
-            if mode == 1: #LECO
+            out = [x[5][mode + 1 if mode > 2 else mode] for x in trainer.all_configs]
+            if mode == 1: #LECO -2nd, LECO, Diff
                 out.extend([False, True, False])
-            elif mode > 1: #Difference
+            elif mode == 2: #Difference
                 out.extend([True, False, True])
+            elif mode == 3: #ADDifT
+                out.extend([False, False, True])
+            elif mode == 4: #Multi-ADDifT
+                out.extend([False, False, False])
             else:
                 out.extend([False, False, False])
             return [gr.update(visible = x) for x in out]
@@ -409,7 +434,11 @@ def on_ui_tabs():
 
     return (ui, "TrainTrain", "TrainTrain"),
 
-def plot_csv(csv_path):
+import os
+import pandas as pd
+import matplotlib.pyplot as plt
+
+def plot_csv(csv_path, logspath="."):
     def get_csv(csv_path):
         csv_path = csv_path if ".csv" in csv_path else csv_path + ".csv"
         if csv_path:
@@ -417,8 +446,7 @@ def plot_csv(csv_path):
                 if csv_path in files:
                     return os.path.join(root, csv_path)
 
-        # 指定されたファイル名が見つからない場合、または csv_path が空の場合
-        # ディレクトリ内で最新の CSV ファイルを探す
+        # 指定されたファイルが見つからない場合、最新の CSV ファイルを探す
         latest_csv = None
         latest_time = 0
 
@@ -434,7 +462,20 @@ def plot_csv(csv_path):
 
         return latest_csv
 
-    df = pd.read_csv(get_csv(csv_path))
+    csv_file = get_csv(csv_path)
+
+    # **"Step" から始まる行を見つける**
+    header_row = 0  # デフォルトは0行目
+    with open(csv_file, "r") as f:
+        for i, line in enumerate(f):
+            if line.startswith("Step"):
+                header_row = i
+                break  # "Step" が見つかったら終了
+
+    # **CSVを適切なヘッダー行から読み込む**
+    df = pd.read_csv(csv_file, skiprows=header_row)
+
+    # x 軸にするカラム名（通常 "Step"）
     x = df.columns[0]
 
     fig, ax1 = plt.subplots(figsize=(10, 6))
@@ -449,7 +490,7 @@ def plot_csv(csv_path):
     # 追加の y 軸 (3 列目以降)
     ax2 = ax1.twinx()
     color = 'tab:blue'
-    ax2.set_ylabel('Learning Rates', color=color)  # 他の列のラベル
+    ax2.set_ylabel('Learning Rates', color=color)
     for column in df.columns[2:]:
         ax2.plot(df[x], df[column], label=column)
     ax2.tick_params(axis='y', labelcolor=color)
@@ -622,7 +663,7 @@ class GenParamGetter(scripts.Script):
             if g4:
                 params = [demo.blocks[x] for x in dependency['inputs']]
                 if _is_txt2img:
-                    paramsnames = [x.label if hasattr(x,"label") else "None" for x in params]
+                    gen.paramsnames = [x.label if hasattr(x,"label") else "None" for x in params]
 
                 if _is_txt2img:
                     txt2img_params = params
@@ -632,7 +673,7 @@ class GenParamGetter(scripts.Script):
                 params = [params for params in demo.fns if GenParamGetter.compare_components_with_ids(params.inputs, dependency["inputs"])]
 
                 if _is_txt2img:
-                    paramsnames = [x.label if hasattr(x,"label") else "None" for x in params[0].inputs]
+                    gen.paramsnames = [x.label if hasattr(x,"label") else "None" for x in params[0].inputs]
 
                 if _is_txt2img:
                     txt2img_params = params[0].inputs 

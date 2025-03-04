@@ -10,9 +10,8 @@
 Stable DiffusionのLoRAを学習するツールです。Stable Diffusion Web-UIの拡張として動作し、学習用の環境構築を必要としません。通常のLoRA及び、モデルの概念を除去・強調するLECOの学習を高速化したiLECO(instant-LECO)と、ふたつの差分画像からスライダーLoRAなどを作成する差分学習を行えます。
 
 # Recent Update
-- Optimizerを追加しました。
-DAdaptAdaGrad, DAdaptAdan, DAdaptSGD, SGDNesterov8bit, Lion8bit, PagedAdamW8bit, PagedLion8bit, RAdamScheduleFree, AdamWScheduleFree, SGDScheduleFree, CAME, Tiger, AdamMini, PagedAdamW, PagedAdamW32bit, SGDNesterov
-- Optimizer, lr Schedulerの追加設定を行えるようになりました。
+2025.02.27
+新しい学習モード「ADDifT」「Multi-ADDifT」を追加しました。詳細は[Noteの記事]()を参照してください。
 
 ## もくじ
 - [使用要件](#使用要件)
@@ -21,6 +20,7 @@ DAdaptAdaGrad, DAdaptAdan, DAdaptSGD, SGDNesterov8bit, Lion8bit, PagedAdamW8bit,
     - [LoRA](#lora)
     - [iLECO](#ileco)
     - [Difference](#difference)
+    - [ADDifT](#addift)
 - [設定](#設定)
     - [必須パラメーター](#必須パラメーター)
     - [オプションパラメーター](#オプションパラメーター)
@@ -67,7 +67,13 @@ Original Promptに「red」、Target Promptに「blue」を入れてみます。
    <img src="https://github.com/hako-mikan/sd-webui-traintrain/blob/images/sample5.jpg" width="200">  
 　Difference_Use2ndPassSettingsを使います。`train batch size`は1～3を設定します。大きな値を入れてもあまり意味はありません。できました。目を閉じる以外はほとんど画風や構図に影響を与えていません。これは2ndPassでrank(dim)を4と小さくしているためです。これをコピー機と同じ16にしてしまうと、画風や構図に影響を与えてしまいます。
  ![](https://github.com/hako-mikan/sd-webui-traintrain/blob/images/sample6.jpg) 
-   
+
+## ADDift
+　ふたつの差分画像からLoRAを作成します。コピー機学習とは異なり、差分を直接LoRAに学習させるため高速に動作します。コピー機LoRAの学習は行いません。Original, Targetに画像を設定してください。画像サイズは同じにしてください。学習させたい対象によってmin/max timestepsを適切に設定しないとうまく学習が行われません。目を閉じる/開けるなどの動作や装飾などの場合にはMin=500, Max=1000にしてください。画風の場合にはMin = 200, Max = 400ぐらいがいいです。学習回数は30～100程度でよく、それ以上だと過学習になります。バッチサイズは1でいいです。バッチサイズを多くしても動作しますが、学習回数を少なくする必要があるのでバッチサイズを小さくして学習回数を稼いだ方が結果はいいと思います。
+
+## Multi-ADDifT
+　ふたつの画像の複数セットから差分LoRAを作成します。LoRA学習と同じようにディレクトリを指定します。ペアはファイル名で判断されます。ディレクトリ内で画像と「diff target name」で指定された画像のペアで学習を行います。例えば「diff target name」が「_closed_eyes」であるとき、「image1.png,image2.png」と「image1_closed_eyes.png,image2_closed_eyes.png」という画像のペアで学習がすすみます。LoRA学習と同じく読み込まれた画像はサイズごとにバケットに分配されます。詳細は[画像の縮小・ミラーリング](#画像の縮小・ミラーリング)を参照してください。
+
 > [!TIP]
 > VRAMが足りない場合は`gradient checkpointng`を有効化して下さい。計算時間が少し長くなる代わりにVRAM使用量を抑えられます。場合によっては`gradient checkpointng`を有効化してバッチサイズを大きくした方が計算時間が短くなる場合があります。コピー機学習ではバッチサイズを3より大きくしても変化は少ないので3以下の方がいいでしょう。バッチサイズは一度に学習する画像の数ですが、バッチサイズを倍にしたときに`iteration`を半分にできるかというとそう簡単な話ではありません。1ステップの学習で1回のウェイトの更新が行われますが、バッチサイズを倍にしてもこの回数は倍にはなりませんし、倍の効率で学習が行われるわけではないからです。
 
@@ -98,6 +104,8 @@ Original Promptに「red」、Target Promptに「blue」を入れてみます。
 |network conv rank|c3lier, loha使用時のconv層のrank、0にするとnetwork rankの値が使われる| 
 |network conv alpha|c3lier, loha使用時のconv層の縮小幅、0にするとnetwork alphaの値が使われる| 
 |network element |学習対象を細かく指定します。lohaでは動作しません。<br>Full : 通常のLoRAと同じです<br>CrossAttention : プロンプトによって生成を処理する層のみを有効化します<br>SelfAttention : プロンプトを使わず生成を処理する層のみを有効化します|
+|train min timesteps|学習を行う最小timesteps| 
+|train max timestep|学習を行う最大timesteps| 
 |train lr step rules|lr schedulerをstepにしたときのステップを指定| 
 |train lr scheduler num cycles|cosine with restartの反復回数|
 |train lr scheduler power |lrスケジューラーをlinearにしたときの指数|
@@ -134,6 +142,13 @@ Original Promptに「red」、Target Promptに「blue」を入れてみます。
 
 ## 謝辞
 　このコードは[Plat](https://github.com/p1atdev)氏の[LECO](https://github.com/p1atdev/LECO), [laksjdjf](https://github.com/laksjdjf)氏の[学習コード](https://github.com/laksjdjf/sd-trainer), [kohya](https://github.com/kohya-ss)氏の[学習コード](https://github.com/kohya-ss/sd-scripts)、[KohakuBlueleaf](https://github.com/KohakuBlueleaf)氏の[LyCORIS](https://github.com/KohakuBlueleaf/LyCORIS)を参考にしています。
+
+## Updates
+2025.01.09
+- Optimizerを追加しました。
+DAdaptAdaGrad, DAdaptAdan, DAdaptSGD, SGDNesterov8bit, Lion8bit, PagedAdamW8bit, PagedLion8bit, RAdamScheduleFree, AdamWScheduleFree, SGDScheduleFree, CAME, Tiger, AdamMini, PagedAdamW, PagedAdamW32bit, SGDNesterov
+- Optimizer, lr Schedulerの追加設定を行えるようになりました。
+
 
 ## Reference
 - https://github.com/rohitgandikota/erasing

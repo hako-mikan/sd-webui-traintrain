@@ -2,23 +2,25 @@ import json
 import os
 import ast
 import warnings
-from datetime import datetime
-from typing import Literal
-from diffusers import StableDiffusionPipeline, DDPMScheduler, StableDiffusionXLPipeline
 import torch
 import subprocess
 import sys
 import torch.nn as nn
+import gradio as gr
+from datetime import datetime
+from typing import Literal
+from diffusers import StableDiffusionPipeline, DDPMScheduler, StableDiffusionXLPipeline, StableDiffusion3Pipeline, FluxPipeline
+from diffusers.optimization import get_scheduler
+from transformers.optimization import AdafactorSchedule
+from torch.optim.lr_scheduler import CosineAnnealingLR, ExponentialLR, CosineAnnealingWarmRestarts, StepLR, MultiStepLR, ReduceLROnPlateau, CyclicLR, OneCycleLR
 from pprint import pprint
 from accelerate import Accelerator
-import gradio as gr
 from modules.scripts import basedir
 from modules import shared
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-from diffusers import (SchedulerMixin, StableDiffusionPipeline,
-                       StableDiffusionXLPipeline)
+from diffusers import StableDiffusionPipeline,StableDiffusionXLPipeline
 from diffusers import (
     StableDiffusionPipeline,
     DDPMScheduler,
@@ -31,8 +33,7 @@ from diffusers import (
     EulerDiscreteScheduler,
     HeunDiscreteScheduler,
     KDPM2DiscreteScheduler,
-    KDPM2AncestralDiscreteScheduler,
-    AutoencoderKL,
+    KDPM2AncestralDiscreteScheduler
 )
 
 all_configs = []
@@ -60,9 +61,7 @@ class Trainer():
         if len(self.image_size) == 1:
             self.image_size = self.image_size * 2
         self.image_size.sort()
-
-        self.train_min_timesteps = 0
-        self.train_max_timesteps = 1000
+        
         self.gradient_accumulation_steps = 1
         self.train_repeat = 1
         self.total_images = 0
@@ -75,7 +74,6 @@ class Trainer():
         clen = len(all_configs) * (len(values) // len(all_configs))
 
         self.prompts = values[clen:clen + 3]
-
         self.images =  values[clen + 3:]
         
         self.add_dcit = {"mode": mode, "model": model, "vae": vae, "original prompt": self.prompts[0],"target prompt": self.prompts[1]}
@@ -102,6 +100,8 @@ class Trainer():
                 try:
                     value = sets[4](value)
                 except:
+                    if not sets[0] == "train_textencoder_learning_rate":
+                        print(f"ERROR, input value for {sets[0]} : {sets[4]} is invalid, use default value {sets[3]}")
                     value = sets[3]
             if "precision" in sets[0]:
                 if sets[0] == "train_model_precision" and value == "fp8":
@@ -136,7 +136,8 @@ class Trainer():
                 value = dvalue
             if set: 
                 setattr(self, sets[0].split("(")[0], value)
-
+        
+        self.mode_fixer()
         return jdict
 
     savedata = ["model", "vae", ]
@@ -161,7 +162,7 @@ class Trainer():
                 json.dump(outdict, file, indent=4)
         
         if jsononly:
-            with open(presetspath, 'w') as file:
+            with open(jsonpath, 'w') as file:
                 json.dump(outdict, file, indent=4)  
 
     def db(self, *obj, pp = False):
@@ -187,7 +188,64 @@ class Trainer():
                 self.count_dict[tag] += 1
             else:
                 self.count_dict[tag] = 1
+    
+    #["LoRA", "iLECO", "Difference","ADDifT", "Multi-ADDifT"]
+    def mode_fixer(self):
+        if self.mode == "LoRA":
+            pass
 
+        if self.mode == "iLECO":
+            self.network_resume  = ""
+
+        if self.mode == "ADDifT":
+            if self.diff_load_1st_pass:
+                self.network_resume = self.diff_load_1st_pass
+            if self.lora_trigger_word == "" and "BASE" in self.network_blocks:
+                self.network_blocks.remove("BASE")
+
+        if self.mode == "Multi-ADDifT":
+            if self.diff_load_1st_pass:
+                self.network_resume = self.diff_load_1st_pass
+
+    def sd_typer(self):
+        model = shared.sd_model
+        self.is_sdxl = type(model).__name__ == "StableDiffusionXL" or getattr(model,'is_sdxl', False)
+        self.is_sd3 = type(model).__name__ == "StableDiffusion3" or getattr(model,'is_sd2', False)
+        self.is_sd2 = type(model).__name__ == "StableDiffusion2" or getattr(model,'is_sd2', False)
+        self.is_sd1 = type(model).__name__ == "StableDiffusion" or getattr(model,'is_sd1', False)
+        self.is_flux = type(model).__name__ == "Flux" or getattr(model,'is_flux', False)
+
+        #sdver: 0:sd1 ,1:sd2, 2:sdxl, 3:sd3, 4:flux
+        if self.is_sdxl:
+            self.model_version = "sdxl_base_v1-0"
+            self.vae_scale_factor = 0.13025
+            self.vae_shift_factor = 0
+            self.sdver = 2
+        elif self.is_sd2:
+            self.model_version = "sd_v2"
+            self.vae_scale_factor = 0.18215
+            self.vae_shift_factor = 0
+            self.sdver = 1
+        elif self.is_sd3:
+            self.model_version = "sd_v3"
+            self.vae_scale_factor = 1.5305
+            self.vae_shift_factor = 0.0609
+            self.sdver = 3
+        elif self.is_flux:
+            self.model_version = "flux"
+            self.vae_scale_factor = 0.3611
+            self.vae_shift_factor = 0.1159
+            self.sdver = 4
+        else:
+            self.model_version = "sd_v1"
+            self.vae_scale_factor = 0.18215
+            self.vae_shift_factor = 0
+            self.sdver = 0
+        
+        self.is_dit = self.is_sd3 or self.is_flux
+        self.is_te2 = self.is_sdxl or self.is_sd3
+
+        print(self.model_version)
 
 def import_json(name, preset = False):
     def find_files(file_name):
@@ -469,125 +527,214 @@ def prepare_scheduler_for_custom_training(noise_scheduler):
 
     noise_scheduler.all_snr = all_snr.to("cuda")
 
-
 def load_checkpoint_model(checkpoint_path, t, clip_skip = None, vae = None):
-    pipe = StableDiffusionPipeline.from_single_file(checkpoint_path,upcast_attention=True if t.isv2 else False,vae = vae)
+    pipe = StableDiffusionPipeline.from_single_file(checkpoint_path,upcast_attention=True if t.is_sd2 else False)
 
-    tokenizer = pipe.tokenizer
     text_encoder = pipe.text_encoder
     unet = pipe.unet
-    vae = pipe.vae
+    if vae is None and hasattr(pipe, "vae"):
+        vae = pipe.vae if vae is not None else vae
 
     if clip_skip is not None:
-        if t.isv2:
+        if t.is_sd2:
             text_encoder.config.num_hidden_layers = 24 - (clip_skip - 1)
         else:
             text_encoder.config.num_hidden_layers = 12 - (clip_skip - 1)
 
-    text_model = TextModel(tokenizer, None, text_encoder, None)
+    text_model = TextModel(
+        pipe.tokenizer,
+        pipe.text_encoder,
+        None, None, None, None,
+        t.sdver,
+        clip_skip
+    )
     
     del pipe
-
     return text_model, unet, vae
 
 def load_checkpoint_model_xl(checkpoint_path, t, vae = None):
-
     pipe = StableDiffusionXLPipeline.from_single_file(checkpoint_path)
 
-    tokenizer = pipe.tokenizer
-    tokenizer_2 = pipe.tokenizer_2
-    text_encoder = pipe.text_encoder
-    text_encoder_2 = pipe.text_encoder_2
     unet = pipe.unet
     vae = pipe.vae
 
-    text_model = TextModel(tokenizer, tokenizer_2, text_encoder, text_encoder_2)
+    text_model = TextModel(
+        pipe.tokenizer,
+        pipe.text_encoder,
+        pipe.tokenizer_2,
+        pipe.text_encoder_2,
+        None, None,
+        t.sdver,
+    )
+    del pipe
+    return text_model, unet, vae
+
+def load_checkpoint_model_sd3(checkpoint_path, t, vae = None, clip_l = None, clip_g = None, t5 = None):
+    pipe = StableDiffusion3Pipeline.from_single_file(checkpoint_path)
+
+    unet = pipe.transformer
+    vae = pipe.vae
+
+    assert clip_l is None and pipe.text_encoder, "ERROR, No CLIP L"
+    assert clip_g is None and pipe.text_encoder2, "ERROR, No CLIP g"
+    assert t5 is None and pipe.text_encoder3, "ERROR, No T5"
+
+    text_model = TextModel(
+        pipe.tokenizer,
+        pipe.text_encoder, 
+        pipe.tokenizer_2,
+        pipe.text_encoder_2,
+        pipe.tokenizer_3,
+        pipe.text_encoder_3,
+        t.sdver
+    )
     
     del pipe
+    return text_model, unet, vae
 
+def load_checkpoint_model_flux(checkpoint_path, t, vae = None, clip_l = None, clip_g = None, t5 = None):
+    pipe = FluxPipeline.from_single_file(checkpoint_path)
+
+    unet = pipe.transformer
+    vae = pipe.vae
+
+    assert clip_l is None and pipe.text_encoder, "ERROR, No CLIP L"
+    assert t5 is None and pipe.text_encoder3, "ERROR, No T5"
+
+    text_model = TextModel(
+        pipe.tokenizer,
+        pipe.text_encoder, 
+        None, None,
+        pipe.tokenizer_2,
+        pipe.text_encoder_2,
+        t.sdver
+    )
+    
+    del pipe
     return text_model, unet, vae
 
 class TextModel(nn.Module):
-    def __init__(self, tokenizer, tokenizer_2, text_encoder, text_encoder_2, clip_skip=-1):
+    def __init__(self, cl_tn, cl_en, cg_tn, cg_en, t5_tn, t5_en, sdver, clip_skip=-1):
         super().__init__()
-        self.tokenizer = tokenizer
-        self.tokenizer_2 = tokenizer_2
-        self.tokenizer_list = [tokenizer] if tokenizer_2 is None else [tokenizer, tokenizer_2]
-
-        self.text_encoder = text_encoder
-        self.text_encoder_2 = text_encoder_2
-        self.text_encoder_list = [text_encoder] if text_encoder_2 is None else [text_encoder, text_encoder_2]
-
-        self.clip_skip = clip_skip
-        self.sdxl = tokenizer_2 is not None
-
+        self.tokenizers = [cl_tn, cg_tn, t5_tn]
+        self.text_encoders = nn.ModuleList([cl_en, cg_en, t5_en])
+        self.clip_skip = clip_skip if clip_skip is not None else -1
         self.textual_inversion = False
+        self.sdver = sdver
 
     def tokenize(self, texts):
-        tokens = self.tokenizer(texts, max_length=self.tokenizer.model_max_length, padding="max_length",
-                                truncation=True, return_tensors='pt').input_ids.to(self.text_encoder.device)
-        if self.sdxl:
-            tokens_2 = self.tokenizer_2(texts, max_length=self.tokenizer_2.model_max_length, padding="max_length",
-                                        truncation=True, return_tensors='pt').input_ids.to(self.text_encoder_2.device)
-            empty_text = []
-            for text in texts:
-                if text == "":
-                    empty_text.append(True)
-                else:
-                    empty_text.append(False)
-        else:
-            tokens_2 = None
-            empty_text = None
+        tokens = []
+        for tokenizer, text_encoder in zip(self.tokenizers, self.text_encoders):
+            if tokenizer is None:
+                tokens.append(None)
+                continue
+            token = tokenizer(
+                texts, 
+                max_length=tokenizer.model_max_length, 
+                padding="max_length",
+                truncation=True,
+                return_tensors='pt'
+            ).input_ids.to(text_encoder.device)
+            tokens.append(token)
+        return tokens
 
-        return tokens, tokens_2, empty_text
+    #sdver: 0:sd1 ,1:sd2, 2:sdxl, 3:sd3, 4:flux
+    def forward(self, tokens):
+        if 2 > self.sdver:
+            return self.encode_sd1_2(tokens)
+        elif self.sdver == 2:
+            return self.encode_sdxl(tokens)
+        elif self.sdver == 3:
+            return self.encode_sd3(tokens)
+        elif self.sdver == 4:
+            return self.encode_flux(tokens)
 
-    def forward(self, tokens, tokens_2=None, empty_text=None):
-        encoder_hidden_states = self.text_encoder(tokens, output_hidden_states=True).hidden_states[self.clip_skip]
-        if self.sdxl:
-            encoder_output_2 = self.text_encoder_2(tokens_2, output_hidden_states=True)
-            
-            # calculate pooled_output
-            last_hidden_state = encoder_output_2.last_hidden_state
-            eos_token_index = torch.where(tokens_2 == self.tokenizer_2.eos_token_id)[1].to(device=last_hidden_state.device)
-            pooled_output = last_hidden_state[
-                torch.arange(last_hidden_state.shape[0], device=last_hidden_state.device),
-                eos_token_index
-            ]
-            pooled_output = self.text_encoder_2.text_projection(pooled_output)
+    def encode_sd1_2(self, tokens):
+        encoder_hidden_states = self.text_encoders[0](tokens[0], output_hidden_states=True).hidden_states[self.clip_skip]
+        encoder_hidden_states = self.text_encoders[0].text_model.final_layer_norm(encoder_hidden_states)
+        return encoder_hidden_states, None
+    
+    def encode_sdxl(self, tokens):
+        encoder_hidden_states = self.text_encoders[0](tokens[0], output_hidden_states=True).hidden_states[self.clip_skip]
+        encoder_output_2 = self.text_encoders[1](tokens[1], output_hidden_states=True)
+        last_hidden_state = encoder_output_2.last_hidden_state
 
-            encoder_hidden_states_2 = encoder_output_2.hidden_states[self.clip_skip]
-            encoder_hidden_states = torch.cat([encoder_hidden_states, encoder_hidden_states_2], dim=2)
+        # calculate pooled_output
+        eos_token_index = torch.where(tokens[1] == self.tokenizers[1].eos_token_id)[1].to(device=last_hidden_state.device)
+        pooled_output = last_hidden_state[torch.arange(last_hidden_state.shape[0], device=last_hidden_state.device),eos_token_index]
+        pooled_output = self.text_encoders[1].text_projection(pooled_output)
 
-            # pooled_output is zero vector for empty text
-            if empty_text is not None:
-                for i, empty in enumerate(empty_text):
-                    if empty:
-                        pooled_output[i] = torch.zeros_like(pooled_output[i])
-        else:
-            encoder_hidden_states = self.text_encoder.text_model.final_layer_norm(encoder_hidden_states)
-            pooled_output = None
+        encoder_hidden_states_2 = encoder_output_2.hidden_states[self.clip_skip]
+
+        # (b, n, 768) + (b, n, 1280) -> (b, n, 2048)
+        encoder_hidden_states = torch.cat([encoder_hidden_states, encoder_hidden_states_2], dim=2)
+
+        # pooled_output is zero vector for empty text            
+        for i, token in enumerate(tokens[1]):
+            if token[1].item() == self.tokenizers[1].eos_token_id:
+                pooled_output[i] = 0
+
+        return encoder_hidden_states, pooled_output
+    
+    def encode_sd3(self, tokens):
+        encoder_output = self.text_encoders[0](tokens[0], output_hidden_states=True)
+        last_hidden_state = encoder_output.last_hidden_state
+        # calculate pooled_output
+        eos_token_index = torch.where(tokens[0] == self.tokenizers[0].eos_token_id)[1][0].to(device=last_hidden_state.device)
+        pooled_output = last_hidden_state[torch.arange(last_hidden_state.shape[0], device=last_hidden_state.device), eos_token_index]
+        pooled_output = self.text_encoders[0].text_projection(pooled_output)
+
+        encoder_hidden_states = encoder_output.hidden_states[self.clip_skip]
+
+        encoder_output_2 = self.text_encoders[1](tokens[1], output_hidden_states=True)
+        last_hidden_state = encoder_output_2.last_hidden_state
+        # calculate pooled_output
+        eos_token_index = torch.where(tokens[1] == self.tokenizers[1].eos_token_id)[1].to(device=last_hidden_state.device)
+        pooled_output_2 = last_hidden_state[torch.arange(last_hidden_state.shape[0], device=last_hidden_state.device),eos_token_index]
+        pooled_output_2 = self.text_encoders[1].text_projection(pooled_output_2)
+
+        encoder_hidden_states_2 = encoder_output_2.hidden_states[self.clip_skip]
+
+        encoder_hidden_states_3 = self.text_encoders[2](tokens[2], output_hidden_states=False)[0]
+
+        # (b, n, 768) + (b, n, 1280) -> (b, n, 2048)
+        encoder_hidden_states = torch.cat([encoder_hidden_states, encoder_hidden_states_2], dim=2)
+
+        # pad
+        encoder_hidden_states = torch.cat([encoder_hidden_states, torch.zeros_like(encoder_hidden_states)], dim=2)
+        encoder_hidden_states = torch.cat([encoder_hidden_states, encoder_hidden_states_3], dim=1) # t5
+
+        pooled_output = torch.cat([pooled_output, pooled_output_2], dim=1)
+
+        return encoder_hidden_states, pooled_output
+
+    def encode_flux(self, tokens):
+        pooled_output = self.text_encoders[0](tokens[0], output_hidden_states=False).pooler_output
+        encoder_hidden_states = self.text_encoders[2](tokens[2], output_hidden_states=False)[0]
 
         return encoder_hidden_states, pooled_output
 
     def encode_text(self, texts):
-        tokens, tokens_2, empty_text = self.tokenize(texts)
-        encoder_hidden_states, pooled_output = self.forward(tokens, tokens_2, empty_text)
+        tokens = self.tokenize(texts)
+        encoder_hidden_states, pooled_output = self.forward(tokens)
         return encoder_hidden_states, pooled_output
 
     def gradient_checkpointing_enable(self, enable=True):
         if enable:
-            self.text_encoder.gradient_checkpointing_enable()
-            if self.sdxl:
-                self.text_encoder_2.gradient_checkpointing_enable()
+            for te in self.text_encoders:
+                if te is not None:
+                    for param in te.parameters():
+                        param.requires_grad = True
+                    te.gradient_checkpointing_enable()
         else:
-            self.text_encoder.gradient_checkpointing_disable()
-            if self.sdxl:
-                self.text_encoder_2.gradient_checkpointing_disable()
+            for te in self.text_encoders:
+                if te is not None:
+                    te.gradient_checkpointing_disable()
 
     def to(self, device = None, dtype = None):
-        self.text_encoder.to(device,dtype)
-        if self.text_encoder_2 is not None:
-            self.text_encoder_2.to(device,dtype)
+        for te in self.text_encoders:
+            if te is not None:
+                te = te.to(device,dtype)
 
 def install(package):
     subprocess.check_call([sys.executable, "-m", "pip", "install", package])
@@ -615,3 +762,74 @@ def parse_precision(precision, mode = True):
             return 'bf16'
 
     raise ValueError(f"Invalid precision type: {precision}")
+    
+def load_lr_scheduler(t, optimizer):
+    if t.train_optimizer == "adafactor":
+        return AdafactorSchedule(optimizer)
+    
+    args = t.train_lr_scheduler_settings
+    print(f"LR Scheduler args: {args}")
+    
+    # アニーリング系のスケジューラを追加
+    if t.train_lr_scheduler == "cosine_annealing":
+        return CosineAnnealingLR(
+            optimizer,
+            T_max=t.train_iterations,
+            **args
+        )
+    elif t.train_lr_scheduler == "cosine_annealing_with_restarts":
+        return CosineAnnealingWarmRestarts(
+            optimizer,
+            T_0=args.pop("T_0") if "T_0" in args else 10,
+            **args
+        )
+    elif t.train_lr_scheduler == "exponential":
+        return ExponentialLR(
+            optimizer,
+            gamma=args.pop("gamma") if "gamma" in args else 0.9,
+            **args
+        )
+    elif t.train_lr_scheduler == "step":
+        return StepLR(
+            optimizer,
+            step_size=args.pop("step_size") if "step_size" in args else 10,
+            **args
+        )
+    elif t.train_lr_scheduler == "multi_step":
+        return MultiStepLR(
+            optimizer,
+            milestones=args.pop("milestones") if "milestones" in args else [30, 60, 90],
+            **args
+        )
+    elif t.train_lr_scheduler == "reduce_on_plateau":
+        return ReduceLROnPlateau(
+            optimizer,
+            mode='min',
+            **args
+        )
+    elif t.train_lr_scheduler == "cyclic":
+        return CyclicLR(
+            optimizer,
+            base_lr=args.pop("base_lr") if "base_lr" in args else  1e-5,
+            max_lr=args.pop("max_lr") if "max_lr" in args else  1e-3,
+            mode='triangular',
+            **args
+        )
+    elif t.train_lr_scheduler == "one_cycle":
+        return OneCycleLR(
+            optimizer,
+            max_lr=args.pop("max_lr") if "max_lr" in args else  1e-3,
+            total_steps=t.train_iterations,
+            **args
+        )
+    
+    return get_scheduler(
+        name=t.train_lr_scheduler,
+        optimizer=optimizer,
+        step_rules=t.train_lr_step_rules,
+        num_warmup_steps=t.train_lr_warmup_steps if t.train_lr_warmup_steps > 0 else 0,
+        num_training_steps=t.train_iterations,
+        num_cycles=t.train_lr_scheduler_num_cycles if t.train_lr_scheduler_num_cycles > 0 else 1,
+        power=t.train_lr_scheduler_power if t.train_lr_scheduler_power > 0 else 1.0,
+        **t.train_lr_scheduler_settings
+    )
