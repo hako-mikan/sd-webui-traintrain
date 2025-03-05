@@ -10,7 +10,6 @@ requirements = [
 "safetensors",
 "dadaptation==3.2",
 "prodigyopt",
-"wandb",
 "lycoris_lora",
 "pandas",
 "matplotlib",
