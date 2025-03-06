@@ -30,13 +30,7 @@ NETWORK_DIMS = [str(2**x) for x in range(11)]
 NETWORK_ALPHAS = [str(2**(x-5)) for x in range(16)]
 NETWORK_ELEMENTS = ["Full", "CrossAttention", "SelfAttention"]
 IMAGESTEPS = [str(x*64) for x in range(10)]
-SEP = "--------------------------"
-OPTIMIZERS = ["AdamW", "AdamW8bit", "AdaFactor", "Lion", "Prodigy", SEP,
-              "DadaptAdam","DadaptLion", "DAdaptAdaGrad", "DAdaptAdan", "DAdaptSGD",SEP,
-               "Adam8bit", "SGDNesterov8bit", "Lion8bit", "PagedAdamW8bit", "PagedLion8bit",  SEP, 
-               "RAdamScheduleFree", "AdamWScheduleFree", "SGDScheduleFree", SEP, 
-               "CAME", "Tiger", "AdamMini",
-               "PagedAdamW", "PagedAdamW32bit", "SGDNesterov", "Adam",]
+
 LOSS_REDUCTIONS = ["none", "mean"]
 LOSS_FUNCTIONS = ["MSE", "L1", "Smooth-L1"]
 
@@ -73,7 +67,7 @@ image_size = ["image_size(height, width)", "TX",None,512,str,NDIFF]
 train_iterations = ["train_iterations","TX",None,1000,int,ALL]
 train_batch_size = ["train_batch_size", "TX",None,2,int,ALL]
 train_learning_rate = ["train_learning_rate","TX",None,"1e-4",float,ALL]
-train_optimizer =["train_optimizer","DD",OPTIMIZERS,"adamw",str,ALL]
+train_optimizer =["train_optimizer","DD",trainer.OPTIMIZERS,"adamw",str,ALL]
 train_optimizer_settings = ["train_optimizer_settings", "TX",None,"",str,ALL]
 train_lr_scheduler =["train_lr_scheduler","DD",SCHEDULERS, "cosine",str,ALL]
 train_lr_scheduler_settings = ["train_lr_scheduler_settings", "TX",None,"",str,ALL]

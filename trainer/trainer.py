@@ -46,6 +46,14 @@ jsonspath = os.path.join(path_root,"jsons")
 logspath = os.path.join(path_root,"logs")
 presetspath = os.path.join(path_root,"presets")
 
+SEP = "--------------------------"
+OPTIMIZERS = ["AdamW", "AdamW8bit", "AdaFactor", "Lion", "Prodigy", SEP,
+              "DadaptAdam","DadaptLion", "DAdaptAdaGrad", "DAdaptAdan", "DAdaptSGD",SEP,
+               "Adam8bit", "SGDNesterov8bit", "Lion8bit", "PagedAdamW8bit", "PagedLion8bit",  SEP, 
+               "RAdamScheduleFree", "AdamWScheduleFree", "SGDScheduleFree", SEP, 
+               "CAME", "Tiger", "AdamMini",
+               "PagedAdamW", "PagedAdamW32bit", "SGDNesterov", "Adam",]
+
 class Trainer():
     def __init__(self, jsononly, model, vae, mode, values):
         self.values = values
@@ -267,7 +275,6 @@ def import_json(name, preset = False):
     
     def setconfigs(data, output):
         for key, gtype ,_ ,default , dtype, _ in all_configs:
-            from scripts.traintrain import OPTIMIZERS
             if key in data:
                 if key == "train_optimizer":
                     for optim in OPTIMIZERS:
