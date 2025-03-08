@@ -10,24 +10,39 @@ import traceback
 import torch
 from torch.nn import ModuleList
 from tqdm import tqdm
-from modules import sd_models, sd_vae, shared, prompt_parser, lowvram
-from trainer.lora import LoRANetwork, LycorisNetwork
-from trainer import trainer, dataset
+import safetensors.torch
+
 from pprint import pprint
 from accelerate.utils import set_seed
 from diffusers.models import AutoencoderKL
 
+try:
+    from modules import sd_models, sd_vae, shared, prompt_parser, lowvram
+    standalone = False
+except:
+    from modules import checkpoint_pickle
+    standalone = True
+    forge = False
+    
+if standalone:
+    from traintrain.trainer.lora import LoRANetwork, LycorisNetwork
+    from traintrain.trainer import trainer, dataset
+else:
+    from trainer.lora import LoRANetwork, LycorisNetwork
+    from trainer import trainer, dataset
+    
+    try:
+        from modules.sd_models import forge_model_reload, model_data
+        from modules_forge.main_entry import forge_unet_storage_dtype_options
+        from backend.memory_management import free_memory
+        forge = True
+    except:
+        forge = False
+        
+MODEL_LIST = ["SD1", "SD2", "SDXL", "SD3", "FLUX","REFINER", "UNKNOWN"]
 MAX_DENOISING_STEPS = 1000
 ML = "LoRA"
 MD = "Difference"
-
-try:
-    from modules.sd_models import forge_model_reload, model_data
-    from modules_forge.main_entry import forge_unet_storage_dtype_options
-    from backend.memory_management import free_memory
-    forge = True
-except:
-    forge = False
 
 jsonspath = trainer.jsonspath
 logspath = trainer.logspath
@@ -90,6 +105,7 @@ def train(*args):
     while len(queue_list) > 0:
         settings = queue_list.pop(0)
         result +="\n" + train_main(*settings)
+    flush()
     return result
 
 def train_main(jsononly, mode, modelname, vaename, *args):
@@ -106,51 +122,61 @@ def train_main(jsononly, mode, modelname, vaename, *args):
 
     print(" Start Training!")
 
-    currentinfo = shared.sd_model.sd_checkpoint_info if hasattr(shared.sd_model, "sd_checkpoint_info") else None
-
-    checkpoint_info = sd_models.get_closet_checkpoint_match(modelname)
-
-    lowvram.module_in_gpu = None #web-uiのバグ対策
-    
-    if forge:
-        unet_storage_dtype, _ = forge_unet_storage_dtype_options.get(shared.opts.forge_unet_storage_dtype, (None, False))
-        forge_model_params = dict(
-            checkpoint_info=checkpoint_info,
-            additional_modules=shared.opts.forge_additional_modules,
-            unet_storage_dtype=unet_storage_dtype
-        )
-        model_data.forge_loading_parameters = forge_model_params
-        forge_model_reload()
-        vae = shared.sd_model.forge_objects.vae.first_stage_model
-    else:
-        sd_models.load_model(checkpoint_info)
+    if standalone:
+        state_dict = load_torch_file(modelname)
+        model_version = detect_model_version(state_dict)
+        t.sd_typer(ver=model_version)
         vae = None
+        vae_path = vaename if vaename != "" else None
+        checkpoint_filename = modelname
 
-    t.sd_typer()
-
-    checkpoint_filename = shared.sd_model.sd_checkpoint_info.filename
-
-    t.orig_cond, t.orig_vector  = text2cond(t, t.prompts[0])
-    t.targ_cond, t.targ_vector  = text2cond(t, t.prompts[1])
-    t.un_cond, t.un_vector = text2cond(t, t.prompts[2])
-
-    print("Preparing the Model...")
-
-    if forge:
-        sd_models.model_data.sd_model = None
-        sd_models.model_data.loaded_sd_models = []
-        free_memory(0,CUDA, free_all = True)
-        gc.collect()
     else:
-        sd_models.unload_model_weights()
+        currentinfo = shared.sd_model.sd_checkpoint_info if hasattr(shared.sd_model, "sd_checkpoint_info") else None
 
-    lowvram.module_in_gpu = None #web-uiのバグ対策
+        checkpoint_info = sd_models.get_closet_checkpoint_match(modelname)
 
-    vae_path = sd_vae.vae_dict.get(vaename, None)
+        lowvram.module_in_gpu = None #web-uiのバグ対策
+        
+        if forge:
+            unet_storage_dtype, _ = forge_unet_storage_dtype_options.get(shared.opts.forge_unet_storage_dtype, (None, False))
+            forge_model_params = dict(
+                checkpoint_info=checkpoint_info,
+                additional_modules=shared.opts.forge_additional_modules,
+                unet_storage_dtype=unet_storage_dtype
+            )
+            model_data.forge_loading_parameters = forge_model_params
+            forge_model_reload()
+            vae = shared.sd_model.forge_objects.vae.first_stage_model
+        else:
+            sd_models.load_model(checkpoint_info)
+            vae = None
+
+        t.sd_typer()
+
+        checkpoint_filename = shared.sd_model.sd_checkpoint_info.filename
+
+        t.orig_cond, t.orig_vector  = text2cond(t, t.prompts[0])
+        t.targ_cond, t.targ_vector  = text2cond(t, t.prompts[1])
+        t.un_cond, t.un_vector = text2cond(t, t.prompts[2])
+
+        print("Preparing the Model...")
+
+        if forge:
+            sd_models.model_data.sd_model = None
+            sd_models.model_data.loaded_sd_models = []
+            free_memory(0,CUDA, free_all = True)
+            gc.collect()
+        else:
+            sd_models.unload_model_weights()
+
+        lowvram.module_in_gpu = None #web-uiのバグ対策
+
+        vae_path = sd_vae.vae_dict.get(vaename, None)
+        
     if not vae:
         vae = AutoencoderKL.from_single_file(vae_path) if vae_path is not None else None
 
-    print(type(vae))
+    print("VAE: ", type(vae))
 
     if t.is_sdxl: 
         text_model, unet, vae = trainer.load_checkpoint_model_xl(checkpoint_filename, t, vae = vae)
@@ -197,6 +223,13 @@ def train_main(jsononly, mode, modelname, vaename, *args):
     if 0 > t.train_seed: t.train_seed = random.randint(0, 2**32)
     set_seed(t.train_seed)
     makesavelist(t)
+    
+    if standalone:
+        with t.a.autocast():
+            t.orig_cond, t.orig_vector  = t.text_model.encode_text(t.prompts[0])
+            t.targ_cond, t.targ_vector  = t.text_model.encode_text(t.prompts[1])
+            t.un_cond, t.un_vector = t.text_model.encode_text(t.prompts[2])
+    
     del vae, text_model, unet
 
     try:
@@ -216,10 +249,15 @@ def train_main(jsononly, mode, modelname, vaename, *args):
     except Exception as e:
         print(traceback.format_exc())
         result =  f"Error: {e}"
-
+    
+    t.unet.to("cpu")   
+    t.unet = None
     del t
     flush()
-
+    
+    if standalone:
+        return result
+    
     try:
         if forge:
             forge_model_params["checkpoint_info"] = currentinfo if currentinfo else checkpoint_info
@@ -579,16 +617,17 @@ def train_diff2(t):
             
             result = finisher(network, t, pbar.n)
             if result is not None:
-                del optimizer, lr_scheduler
                 return result
 
         epoch += 1
-
-    return savecount(network, t, 0)
+        
+    result = savecount(network, t, 0)
+    return result
 
 #### Prepare LoRA, Optimizer, lr_scheduler, Save###############################################
 def flush():
     torch.cuda.empty_cache()
+    torch.cuda.ipc_collect()
     gc.collect()
 
 def create_network(t):
@@ -713,13 +752,14 @@ def image2latent(t,image):
             return (latent.latent_dist.sample() - t.vae_shift_factor) * t.vae_scale_factor
 
 def text2cond(t, prompt):
-    input = SdConditioning([prompt], width=t.image_size[0], height=t.image_size[1])
-    cond = prompt_parser.get_learned_conditioning(shared.sd_model,input,1)
-    if t.is_sdxl:
-        return [cond[0][0].cond["crossattn"].unsqueeze(0).to(CUDA, dtype=t.train_model_precision),
-                (cond[0][0].cond["vector"][:1280].unsqueeze(0).to(CUDA, dtype=t.train_model_precision))]
-    else:
-        return (cond[0][0].cond.unsqueeze(0).to(CUDA, dtype=t.train_model_precision)), None
+    if not standalone:
+        input = SdConditioning([prompt], width=t.image_size[0], height=t.image_size[1])
+        cond = prompt_parser.get_learned_conditioning(shared.sd_model,input,1)
+        if t.is_sdxl:
+            return [cond[0][0].cond["crossattn"].unsqueeze(0).to(CUDA, dtype=t.train_model_precision),
+                    (cond[0][0].cond["vector"][:1280].unsqueeze(0).to(CUDA, dtype=t.train_model_precision))]
+        else:
+            return (cond[0][0].cond.unsqueeze(0).to(CUDA, dtype=t.train_model_precision)), None
 
 class SdConditioning(list):
     def __init__(self, prompts, is_negative_prompt=False, width=None, height=None, copy_from=None):
@@ -804,3 +844,49 @@ def metadator(t):
         "ss_min_snr_gamma": t.train_snr_gamma,
         "ss_tag_frequency": json.dumps({1:t.count_dict})
     }
+    
+#### StandAlone ####################################################
+def load_torch_file(ckpt, safe_load=False, device=None):
+    if device is None:
+        device = torch.device("cpu")
+    if ckpt.lower().endswith(".safetensors"):
+        sd = safetensors.torch.load_file(ckpt, device=device.type)
+    else:
+        if safe_load:
+            if not 'weights_only' in torch.load.__code__.co_varnames:
+                print("Warning torch.load doesn't support weights_only on this pytorch version, loading unsafely.")
+                safe_load = False
+        if safe_load:
+            pl_sd = torch.load(ckpt, map_location=device, weights_only=True)
+        else:
+            pl_sd = torch.load(ckpt, map_location=device, pickle_module=checkpoint_pickle)
+        if "global_step" in pl_sd:
+            print(f"Global Step: {pl_sd['global_step']}")
+        if "state_dict" in pl_sd:
+            sd = pl_sd["state_dict"]
+        else:
+            sd = pl_sd
+    return sd
+
+def detect_model_version(state_dict):
+    flux_test_key = "model.diffusion_model.double_blocks.0.img_attn.norm.key_norm.scale"
+    sd3_test_key = "model.diffusion_model.final_layer.adaLN_modulation.1.bias"
+    legacy_test_key = "model.diffusion_model.input_blocks.4.1.transformer_blocks.0.attn2.to_k.weight"
+
+    model_type = "-"
+    if legacy_test_key in state_dict:
+        match state_dict[legacy_test_key].shape[1]:
+            case 768:
+                return 0
+            case 1024:
+                return 1
+            case 1280:
+                return 5     # sdxl refiner model
+            case 2048:
+                return 2
+    elif flux_test_key in state_dict:
+        return 4
+    elif sd3_test_key in state_dict:
+        return 3
+    else:
+        return -1

@@ -9,20 +9,17 @@ import torch.nn as nn
 import gradio as gr
 from datetime import datetime
 from typing import Literal
-from diffusers import StableDiffusionPipeline, DDPMScheduler, StableDiffusionXLPipeline, StableDiffusion3Pipeline, FluxPipeline
 from diffusers.optimization import get_scheduler
 from transformers.optimization import AdafactorSchedule
 from torch.optim.lr_scheduler import CosineAnnealingLR, ExponentialLR, CosineAnnealingWarmRestarts, StepLR, MultiStepLR, ReduceLROnPlateau, CyclicLR, OneCycleLR
 from pprint import pprint
 from accelerate import Accelerator
-from modules.scripts import basedir
-from modules import shared
-
-warnings.filterwarnings("ignore", category=FutureWarning)
-
-from diffusers import StableDiffusionPipeline,StableDiffusionXLPipeline
+from pathlib import Path
 from diffusers import (
     StableDiffusionPipeline,
+    StableDiffusionXLPipeline,
+    StableDiffusion3Pipeline, 
+    FluxPipeline,
     DDPMScheduler,
     EulerAncestralDiscreteScheduler,
     DPMSolverMultistepScheduler,
@@ -36,12 +33,31 @@ from diffusers import (
     KDPM2AncestralDiscreteScheduler
 )
 
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+try:
+    from modules.scripts import basedir
+    from modules import shared
+    standalone = False
+    path_root = basedir()
+    lora_dir = shared.cmd_opts.lora_dir
+except:
+    path_root = Path.cwd()
+    lora_dir = os.path.join(path_root,"output")
+    path_root = os.path.join(path_root, "traintrain")
+    standalone = True
+    from modules.launch_utils import args
+    print(args.models_dir)
+    if args.models_dir:
+        lora_dir = os.path.join(args.models_dir,"lora")
+    if args.lora_dir:
+        lora_dir = args.lora_dir
+
 all_configs = []
 
 PASS2 = "2nd pass"
 POs = ["came", "tiger", "adammini"]
 
-path_root = basedir()
 jsonspath = os.path.join(path_root,"jsons")
 logspath = os.path.join(path_root,"logs")
 presetspath = os.path.join(path_root,"presets")
@@ -62,7 +78,9 @@ class Trainer():
         self.count_dict = {}
         self.metadata = {}
 
-        self.save_dir = shared.cmd_opts.lora_dir
+        self.save_dir = lora_dir
+        if not os.path.exists(lora_dir):
+            os.makedirs(lora_dir)
         self.setpass(0)
 
         self.image_size = [int(x) for x in self.image_size.split(",")]
@@ -215,13 +233,20 @@ class Trainer():
             if self.diff_load_1st_pass:
                 self.network_resume = self.diff_load_1st_pass
 
-    def sd_typer(self):
-        model = shared.sd_model
-        self.is_sdxl = type(model).__name__ == "StableDiffusionXL" or getattr(model,'is_sdxl', False)
-        self.is_sd3 = type(model).__name__ == "StableDiffusion3" or getattr(model,'is_sd2', False)
-        self.is_sd2 = type(model).__name__ == "StableDiffusion2" or getattr(model,'is_sd2', False)
-        self.is_sd1 = type(model).__name__ == "StableDiffusion" or getattr(model,'is_sd1', False)
-        self.is_flux = type(model).__name__ == "Flux" or getattr(model,'is_flux', False)
+    def sd_typer(self, ver = None):
+        if ver is None:
+            model = shared.sd_model
+            self.is_sd1 = type(model).__name__ == "StableDiffusion" or getattr(model,'is_sd1', False)
+            self.is_sd2 = type(model).__name__ == "StableDiffusion2" or getattr(model,'is_sd2', False)
+            self.is_sdxl = type(model).__name__ == "StableDiffusionXL" or getattr(model,'is_sdxl', False)
+            self.is_sd3 = type(model).__name__ == "StableDiffusion3" or getattr(model,'is_sd2', False)
+            self.is_flux = type(model).__name__ == "Flux" or getattr(model,'is_flux', False)
+        else:
+            self.is_sd1 = ver == 0
+            self.is_sd2 = ver == 1
+            self.is_sdxl = ver == 2
+            self.is_sd3 = ver == 3
+            self.is_flux = ver == 4
 
         #sdver: 0:sd1 ,1:sd2, 2:sdxl, 3:sd3, 4:flux
         if self.is_sdxl:
@@ -253,7 +278,7 @@ class Trainer():
         self.is_dit = self.is_sd3 or self.is_flux
         self.is_te2 = self.is_sdxl or self.is_sd3
 
-        print(self.model_version)
+        print("Base Model : ", self.model_version)
 
 def import_json(name, preset = False):
     def find_files(file_name):
@@ -540,7 +565,7 @@ def load_checkpoint_model(checkpoint_path, t, clip_skip = None, vae = None):
     text_encoder = pipe.text_encoder
     unet = pipe.unet
     if vae is None and hasattr(pipe, "vae"):
-        vae = pipe.vae if vae is not None else vae
+        vae = pipe.vae
 
     if clip_skip is not None:
         if t.is_sd2:
@@ -563,7 +588,8 @@ def load_checkpoint_model_xl(checkpoint_path, t, vae = None):
     pipe = StableDiffusionXLPipeline.from_single_file(checkpoint_path)
 
     unet = pipe.unet
-    vae = pipe.vae
+    if vae is None and hasattr(pipe, "vae"):
+        vae = pipe.vae
 
     text_model = TextModel(
         pipe.tokenizer,

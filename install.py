@@ -6,11 +6,10 @@ from packaging.version import Version
 from packaging.requirements import Requirement
 
 requirements = [
-"diffusers",
+"diffusers==0.31.0",
 "safetensors",
 "dadaptation==3.2",
 "prodigyopt",
-"wandb",
 "lycoris_lora",
 "pandas",
 "matplotlib",

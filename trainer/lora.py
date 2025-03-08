@@ -5,10 +5,6 @@ from typing import Literal
 import torch
 import torch.nn as nn
 from safetensors.torch import save_file
-from modules import scripts
-
-scriptpath = scripts.basedir()
-jsonspath = os.path.join(scriptpath,"jsons")
 
 BLOCKID26=["BASE","IN00","IN01","IN02","IN03","IN04","IN05","IN06","IN07","IN08","IN09","IN10","IN11","M00","OUT00","OUT01","OUT02","OUT03","OUT04","OUT05","OUT06","OUT07","OUT08","OUT09","OUT10","OUT11"]
 BLOCKID17=["BASE","IN01","IN02","IN04","IN05","IN07","IN08","M00","OUT03","OUT04","OUT05","OUT06","OUT07","OUT08","OUT09","OUT10","OUT11"]
