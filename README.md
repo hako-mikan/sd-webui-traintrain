@@ -7,6 +7,9 @@
 [<img src="https://img.shields.io/badge/Support-%E2%99%A5-magenta.svg?logo=github&style=plastic" height="25" />](https://github.com/sponsors/hako-mikan)
 
 # Recent Update
+Standalone training is now supported. For details, please refer to the [Standalone Environment Setup Repository](https://github.com/hako-mikan/traintrain-standalone).
+
+- Added new training method ADDifT
 - Added Optimizers
 DAdaptAdaGrad, DAdaptAdan, DAdaptSGD, SGDNesterov8bit, Lion8bit, PagedAdamW8bit, PagedLion8bit, RAdamScheduleFree, AdamWScheduleFree, SGDScheduleFree, CAME, Tiger, AdamMini, PagedAdamW, PagedAdamW32bit, SGDNesterov
 - added addtional settigs for Optimizer and lr Scheduler
@@ -21,6 +24,8 @@ This is a tool for training LoRA for Stable Diffusion. It operates as an extensi
     - [LoRA](#lora)
     - [iLECO](#ileco)
     - [Difference](#difference)
+    - [ADDifT](#addift)
+    - [Multi-ADDifT](#multi-addift)
 - [Settings](#settings)
     - [Mandatory Parameters](#mandatory-parameters)
     - [Optional Parameters](#optional-parameters)
@@ -29,7 +34,7 @@ This is a tool for training LoRA for Stable Diffusion. It operates as an extensi
 - [Acknowledgments & References](#acknowledgments)
 
 ## Requirements
-   Operates with Web-UI 1.7.
+   Operates with Web-UI 1.10, latest version of Forge/reForge.
 
 ## Installation
    Enter `https://github.com/hako-mikan/sd-webui-traintrain` in the Web-UI's Install From URL and press the Install button, then restart. The first startup may take a little time (a few seconds to tens of seconds).
@@ -68,6 +73,12 @@ Learn LoRA from images.
    Use Difference_Use2ndPass. Set `train batch size` to 1-3. A larger value does not make much difference.   
     ![](https://github.com/hako-mikan/sd-webui-traintrain/blob/images/sample6.jpg)   
     We succeeded. Other than closing the eyes, there is almost no impact on the painting style or composition. This is because the rank(dim) is set to 4, which is small in the 2ndPass. If you set this to the same 16 as the copy machine, it will affect the painting style and composition.
+
+## ADDifT  
+Creates a LoRA from two difference images. Unlike copier learning, this method directly trains the LoRA on the differences, making it significantly faster. It does not train copier LoRAs. Set the images for `"Original"` and `"Target"` and ensure they have the same size. Properly adjusting the min/max timesteps is crucial for effective learning, depending on the target subject. For actions or decorations like opening/closing eyes, set Min = 500 and Max = 1000. For art styles, Min = 200 and Max = 400 work well. The number of training iterations should be around 30 to 100; exceeding this may lead to overfitting. The batch size should be set to 1. Although increasing the batch size is possible, reducing the number of training iterations would be necessary, so keeping a small batch size and increasing iterations generally yields better results.
+
+## Multi-ADDift  
+Creates a difference LoRA from multiple sets of two images. It follows the same directory-based approach as LoRA training, with pairs determined by file names. The training pairs are formed using images and those specified with the `"diff target name."` For example, if the `"diff target name"` is `"_closed_eyes,"` the method will pair images like `"image1.png, image2.png"` with `"image1_closed_eyes.png, image2_closed_eyes.png"` for training. As with standard LoRA training, loaded images are bucketed based on their size. For more details, refer to [Image Resizing & Mirroring](#Image-Resizing-&-Mirroring).
 
 > [!TIP]
 > If you don't have enough VRAM, enable `gradient checkpointing`. It will slightly extend the computation time but reduce VRAM usage. In some cases, activating `gradient checkpointing` and increasing the batch size can shorten the computation time. In copy machine learning, increasing the batch size beyond 3 makes little difference, so it's better to keep it at 3 or less. The batch size is the number of images learned at once, but doubling the batch size doesn't mean you can halve the `iterations`. In one learning step, the weights are updated once, but doubling the batch size does not double the number of updates, nor does it double the efficiency of learning.

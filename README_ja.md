@@ -10,6 +10,8 @@
 Stable DiffusionのLoRAを学習するツールです。Stable Diffusion Web-UIの拡張として動作し、学習用の環境構築を必要としません。通常のLoRA及び、モデルの概念を除去・強調するLECOの学習を高速化したiLECO(instant-LECO)と、ふたつの差分画像からスライダーLoRAなどを作成する差分学習を行えます。
 
 # Recent Update
+スタンドアロン環境で学習できるようになりました。詳細は[スタンドアロン環境構築レポジトリ](https://github.com/hako-mikan/traintrain-standalone)を参照してください。
+
 2025.03.04
 新しい学習モード「ADDifT」「Multi-ADDifT」を追加しました。詳細は[Noteの記事]()を参照してください。
 
@@ -29,7 +31,7 @@ Stable DiffusionのLoRAを学習するツールです。Stable Diffusion Web-UI�
 - [謝辞・参考文献](#謝辞)
 
 ## 使用要件
-　Web-UI 1.7以上、最新版のForgeで動作します。
+　Web-UI 1.10以上、最新版のForge/reForgeで動作します。
 
 ## インストール
 　Web-UIのInstall From URLに`https://github.com/hako-mikan/sd-webui-traintrain`と入力しInstallボタンを押します。少し(数秒～数十秒)時間が掛かります。
@@ -68,7 +70,7 @@ Original Promptに「red」、Target Promptに「blue」を入れてみます。
 　Difference_Use2ndPassSettingsを使います。`train batch size`は1～3を設定します。大きな値を入れてもあまり意味はありません。できました。目を閉じる以外はほとんど画風や構図に影響を与えていません。これは2ndPassでrank(dim)を4と小さくしているためです。これをコピー機と同じ16にしてしまうと、画風や構図に影響を与えてしまいます。
  ![](https://github.com/hako-mikan/sd-webui-traintrain/blob/images/sample6.jpg) 
 
-## ADDift
+## ADDifT
 　ふたつの差分画像からLoRAを作成します。コピー機学習とは異なり、差分を直接LoRAに学習させるため高速に動作します。コピー機LoRAの学習は行いません。Original, Targetに画像を設定してください。画像サイズは同じにしてください。学習させたい対象によってmin/max timestepsを適切に設定しないとうまく学習が行われません。目を閉じる/開けるなどの動作や装飾などの場合にはMin=500, Max=1000にしてください。画風の場合にはMin = 200, Max = 400ぐらいがいいです。学習回数は30～100程度でよく、それ以上だと過学習になります。バッチサイズは1でいいです。バッチサイズを多くしても動作しますが、学習回数を少なくする必要があるのでバッチサイズを小さくして学習回数を稼いだ方が結果はいいと思います。
 
 ## Multi-ADDifT
