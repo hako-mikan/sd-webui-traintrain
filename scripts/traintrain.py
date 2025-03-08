@@ -18,9 +18,9 @@ except:
     
 if standalone:
     from traintrain.trainer import train, trainer
+    from modules.launch_utils import args
 else:
     from trainer import train, trainer, gen
-
 
 jsonspath = trainer.jsonspath
 logspath = trainer.logspath
@@ -76,7 +76,7 @@ image_size = ["image_size(height, width)", "TX",None,512,str,NDIFF]
 train_iterations = ["train_iterations","TX",None,1000,int,ALL]
 train_batch_size = ["train_batch_size", "TX",None,2,int,ALL]
 train_learning_rate = ["train_learning_rate","TX",None,"1e-4",float,ALL]
-train_optimizer =["train_optimizer","DD",trainer.OPTIMIZERS,"adamw",str,ALL]
+train_optimizer =["train_optimizer","DD",trainer.OPTIMIZERS,trainer.OPTIMIZERS[0],str,ALL]
 train_optimizer_settings = ["train_optimizer_settings", "TX",None,"",str,ALL]
 train_lr_scheduler =["train_lr_scheduler","DD",SCHEDULERS, "cosine",str,ALL]
 train_lr_scheduler_settings = ["train_lr_scheduler_settings", "TX",None,"",str,ALL]
@@ -193,6 +193,11 @@ imagegal_targ = None
 
 IS_GRADIO_4 = version.parse(gr.__version__) >= version.parse("4.0.0") #and version.parse(gr.__version__) <= version.parse("4.4.2")
 
+def load_css():
+    with open('style.css', 'r', encoding = "utf-8") as file:
+        css_content = file.read()
+    return css_content
+
 class FormComponent:
     webui_do_not_create_gradio_pyi_thank_you = True
 
@@ -229,7 +234,7 @@ def on_ui_tabs():
     save_symbol = '\U0001f4be'     # 💾
     refresh_symbol = '\U0001f504'  # 🔄
 
-    with gr.Blocks(css=".gradio-textbox {margin-bottom: 0 !important;}") as ui:
+    with gr.Blocks(css = load_css() if standalone else ".gradio-textbox {margin-bottom: 0 !important;}", theme=get_gr_themas()) as ui:
         with gr.Tab("Train"):
             result = gr.Textbox(label="Message")
             with gr.Row():
@@ -256,14 +261,22 @@ def on_ui_tabs():
                 with gr.Column():
                     with gr.Row(equal_height=True):
                         if standalone:
-                            model = gr.Textbox(elem_id="model_converter_model_name",label="Model",interactive=True)
+                            model_list = get_models_list(False)
+                            if type(model_list) is list:
+                                model = gr.Dropdown(model_list,elem_id="model_converter_model_name",label="Model",interactive=True, allow_custom_value=True)
+                            else:
+                                model = gr.Textbox(elem_id="model_converter_model_name",label="Model",interactive=True)
                         else:
                             model = gr.Dropdown(sd_models.checkpoint_tiles(),elem_id="model_converter_model_name",label="Model",interactive=True)
                             create_refresh_button(model, sd_models.list_models,lambda: {"choices": sd_models.checkpoint_tiles()},"refresh_checkpoint_Z")
                 with gr.Column():
                     with gr.Row(equal_height=True):
                         if standalone:
-                            vae = gr.Textbox(value="None", label="VAE", elem_id="modelmerger_bake_in_vae")
+                            vae_list = get_models_list(True)
+                            if type(vae_list) is list:
+                                vae = gr.Dropdown(choices=["None"] + vae_list, value="None", label="VAE", elem_id="modelmerger_bake_in_vae", allow_custom_value=True)
+                            else:
+                                vae = gr.Textbox(value="", label="VAE", elem_id="modelmerger_bake_in_vae")
                         else:
                             vae = gr.Dropdown(choices=["None"] + list(sd_vae.vae_dict), value="None", label="VAE", elem_id="modelmerger_bake_in_vae")
                             create_refresh_button(vae, sd_vae.refresh_vae_list, lambda: {"choices": ["None"] + list(sd_vae.vae_dict)}, "modelmerger_refresh_bake_in_vae")
@@ -625,6 +638,68 @@ def getjsonlist():
     json_files = [f for f in os.listdir(jsonspath) if f.endswith('.json')]
     json_files = [f.replace(".json", "") for f in json_files]
     return json_files
+
+import os
+
+def get_models_list(vae):
+    def list_files_with_extensions(directory: str, extensions: list) -> list:
+        """
+        指定されたディレクトリ内の特定の拡張子のファイルをリストアップする。
+        サブディレクトリを含めた相対パスの形式で出力する。
+        :param directory: 探索するディレクトリのパス
+        :param extensions: 対象の拡張子リスト（例：['.jpg', '.png']）
+        :return: サブディレクトリを含むファイルリスト
+        """
+        if not os.path.exists(directory):
+            return ""
+        
+        file_list = []
+        for root, _, files in os.walk(directory):
+            for file in files:
+                if any(file.endswith(ext) for ext in extensions):
+                    relative_path = os.path.relpath(os.path.join(root, file), directory)
+                    file_list.append(relative_path)
+        return file_list
+    
+    if vae:
+        vae_path = ""
+        if args.models_dir:
+            root = args.models_dir
+            vae_path = os.path.join(root, "VAE")
+        if args.vae_dir:
+            vae_path = args.vae_dir
+        if not vae_path or not os.path.exists(vae_path):
+            return ""
+        return list_files_with_extensions(vae_path, [".safetensors", ".pt"])
+    else:
+        sd_path = ""
+        if args.models_dir:
+            root = args.models_dir
+            sd_path = os.path.join(root, "StableDiffusion")
+        if args.ckpt_dir:
+            sd_path = args.ckpt_dir
+        if not sd_path or not os.path.exists(sd_path):
+            return ""
+        return list_files_with_extensions(sd_path, [".safetensors", ".ckpt"])
+
+def get_gr_themas():
+    gr_themas = {
+    "base" : gr.themes.Base(),
+    "default" : gr.themes.Default(),
+    "origin" : gr.themes.Origin(),
+    "citrus" : gr.themes.Citrus(),
+    "monochrome" : gr.themes.Monochrome(),
+    "soft" : gr.themes.Soft(),
+    "glass" : gr.themes.Glass(),
+    "ocean" : gr.themes.Ocean(),
+    }
+    
+    if not standalone:
+        return None
+    thema = args.thema
+    if thema in gr_themas:
+        return gr_themas[thema]
+    return gr.themes.Default()
 
 if not standalone:
     class GenParamGetter(scripts.Script):

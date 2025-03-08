@@ -108,10 +108,10 @@ def train(*args):
     flush()
     return result
 
-def train_main(jsononly, mode, modelname, vaename, *args):
-    t = trainer.Trainer(jsononly, modelname, vaename, mode, args)
+def train_main(jsononly_or_paths, mode, modelname, vaename, *args):
+    t = trainer.Trainer(jsononly_or_paths, modelname, vaename, mode, args)
 
-    if jsononly:
+    if type(jsononly_or_paths) is bool and jsononly_or_paths == True:
         return "Preset saved"
 
     if t.isfile:
@@ -123,12 +123,18 @@ def train_main(jsononly, mode, modelname, vaename, *args):
     print(" Start Training!")
 
     if standalone:
-        state_dict = load_torch_file(modelname)
+        if not os.path.exists(modelname):
+            checkpoint_filename = os.path.join(t.models_dir, modelname) if hasattr(t, "models_dir") else modelname
+        state_dict = load_torch_file(checkpoint_filename)
         model_version = detect_model_version(state_dict)
+        del state_dict
+        flush()
         t.sd_typer(ver=model_version)
         vae = None
-        vae_path = vaename if vaename != "" else None
-        checkpoint_filename = modelname
+        vae_path = None if vaename in ["", "None"] else vaename
+        if vae_path is not None and not os.path.exists(vaename):
+            if hasattr(t, "vae_dir"):
+                vae_path = os.path.join(t.vae_dir, vae_path)
 
     else:
         currentinfo = shared.sd_model.sd_checkpoint_info if hasattr(shared.sd_model, "sd_checkpoint_info") else None
@@ -737,7 +743,7 @@ def apply_snr_weight(loss, timesteps, noise_scheduler, gamma):
 def image2latent(t,image):
     if isinstance(image, str):
         with Image.open(image) as img:
-            image = img
+            image = img.convert("RGB")
     image = numpy.array(image)
     image = image.astype(numpy.float32) / 255.0
     image = numpy.moveaxis(image, 2, 0)

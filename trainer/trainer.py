@@ -47,11 +47,6 @@ except:
     path_root = os.path.join(path_root, "traintrain")
     standalone = True
     from modules.launch_utils import args
-    print(args.models_dir)
-    if args.models_dir:
-        lora_dir = os.path.join(args.models_dir,"lora")
-    if args.lora_dir:
-        lora_dir = args.lora_dir
 
 all_configs = []
 
@@ -72,6 +67,15 @@ OPTIMIZERS = ["AdamW", "AdamW8bit", "AdaFactor", "Lion", "Prodigy", SEP,
 
 class Trainer():
     def __init__(self, jsononly, model, vae, mode, values):
+        if type(jsononly) is list:
+            paths = jsononly
+            jsononly = False
+        else:
+            if standalone:
+                paths = [args.models_dir, args.ckpt_dir, args.vae_dir, args.lora_dir]
+            else:
+                paths = None
+                
         self.values = values
         self.mode = mode
         self.use_8bit = False
@@ -105,6 +109,8 @@ class Trainer():
         self.add_dcit = {"mode": mode, "model": model, "vae": vae, "original prompt": self.prompts[0],"target prompt": self.prompts[1]}
 
         self.export_json(jsononly)
+        if paths is not None:
+            self.setpaths(paths)
 
     def setpass(self, pas, set = True):
         values_0 = self.values[:len(all_configs)]
@@ -279,8 +285,20 @@ class Trainer():
         self.is_te2 = self.is_sdxl or self.is_sd3
 
         print("Base Model : ", self.model_version)
+    
+    def setpaths(self, paths):
+        if paths[0] is not None:#root
+            self.save_dir = os.path.join(paths[0],"lora")
+            self.models_dir = os.path.join(paths[0],"StableDiffusion")
+            self.vae_dir = os.path.join(paths[0],"VAE")
+        if paths[1] is not None:#model
+            self.models_dir = paths[1]
+        if paths[2] is not None:#vae
+            self.vae_dir = paths[2]
+        if paths[3] is not None:#lora
+            self.save_dir = paths[3]
 
-def import_json(name, preset = False):
+def import_json(name, preset = False, cli = False):
     def find_files(file_name):
         for root, dirs, files in os.walk(jsonspath):
             if file_name in files:
@@ -288,6 +306,8 @@ def import_json(name, preset = False):
         return None
     if preset:
         filepath = os.path.join(presetspath, name + ".json")
+    elif cli:
+        filepath = name
     else:
         filepath = find_files(name if ".json" in name else name + ".json")
 
@@ -324,6 +344,9 @@ def import_json(name, preset = False):
     output.append(data["original prompt"] if "original prompt" in data else "")
     output.append(data["target prompt"] if "target prompt" in data else "")
     output.append("")
+    if cli:
+        output.append(data["original image"] if "original image" in data else "")
+        output.append(data["target image"] if "target image" in data else "")
     
     head = []
     head.append(data["mode"] if "mode" in data else "LoRA")
