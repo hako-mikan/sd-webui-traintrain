@@ -683,6 +683,9 @@ def get_models_list(vae):
         return list_files_with_extensions(sd_path, [".safetensors", ".ckpt"])
 
 def get_gr_themas():
+    if not standalone:
+        return None
+        
     gr_themas = {
     "base" : gr.themes.Base(),
     "default" : gr.themes.Default(),
@@ -694,8 +697,6 @@ def get_gr_themas():
     "ocean" : gr.themes.Ocean(),
     }
     
-    if not standalone:
-        return None
     thema = args.thema
     if thema in gr_themas:
         return gr_themas[thema]
