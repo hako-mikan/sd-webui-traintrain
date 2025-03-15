@@ -15,6 +15,8 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, ExponentialLR, CosineAnn
 from pprint import pprint
 from accelerate import Accelerator
 from pathlib import Path
+import safetensors.torch
+from diffusers.models import AutoencoderKL
 from diffusers import (
     StableDiffusionPipeline,
     StableDiffusionXLPipeline,
@@ -40,11 +42,13 @@ try:
     from modules import shared
     standalone = False
     path_root = basedir()
+    path_trainer = os.path.join(path_root, "trainer")
     lora_dir = shared.cmd_opts.lora_dir
 except:
     path_root = Path.cwd()
     lora_dir = os.path.join(path_root,"output")
     path_root = os.path.join(path_root, "traintrain")
+    path_trainer = os.path.join(path_root, "trainer")
     standalone = True
     from modules.launch_utils import args
 
@@ -889,3 +893,136 @@ def load_lr_scheduler(t, optimizer):
         power=t.train_lr_scheduler_power if t.train_lr_scheduler_power > 0 else 1.0,
         **t.train_lr_scheduler_settings
     )
+
+def load_torch_file(ckpt, safe_load=False, device=None):
+    if not safe_load:
+        from modules import checkpoint_pickle
+    if device is None:
+        device = torch.device("cpu")
+    if ckpt.lower().endswith(".safetensors"):
+        sd = safetensors.torch.load_file(ckpt, device=device.type)
+    else:
+        if safe_load:
+            if not 'weights_only' in torch.load.__code__.co_varnames:
+                print("Warning torch.load doesn't support weights_only on this pytorch version, loading unsafely.")
+                safe_load = False
+        if safe_load:
+            pl_sd = torch.load(ckpt, map_location=device, weights_only=True)
+        else:
+            pl_sd = torch.load(ckpt, map_location=device, pickle_module=checkpoint_pickle)
+        if "global_step" in pl_sd:
+            print(f"Global Step: {pl_sd['global_step']}")
+        if "state_dict" in pl_sd:
+            sd = pl_sd["state_dict"]
+        else:
+            sd = pl_sd
+    return sd   
+
+
+VAE_CONFIG_SD1 ={
+  "_class_name": "AutoencoderKL",
+  "_diffusers_version": "0.6.0",
+  "act_fn": "silu",
+  "block_out_channels": [128,256,512,512],
+  "down_block_types": ["DownEncoderBlock2D","DownEncoderBlock2D","DownEncoderBlock2D","DownEncoderBlock2D"],
+  "in_channels": 3,
+  "latent_channels": 4,
+  "layers_per_block": 2,
+  "norm_num_groups": 32,
+  "out_channels": 3,
+  "sample_size": 256,
+  "up_block_types": ["UpDecoderBlock2D","UpDecoderBlock2D","UpDecoderBlock2D","UpDecoderBlock2D"],
+}
+
+VAE_CONFIG_SD2 = {
+  "_class_name": "AutoencoderKL",
+  "_diffusers_version": "0.8.0",
+  "_name_or_path": "hf-models/stable-diffusion-v2-768x768/vae",
+  "act_fn": "silu",
+  "block_out_channels": [128,256,512,512],
+  "down_block_types": ["DownEncoderBlock2D","DownEncoderBlock2D","DownEncoderBlock2D","DownEncoderBlock2D"],
+  "in_channels": 3,
+  "latent_channels": 4,
+  "layers_per_block": 2,
+  "norm_num_groups": 32,
+  "out_channels": 3,
+  "sample_size": 768,
+  "up_block_types": ["UpDecoderBlock2D","UpDecoderBlock2D","UpDecoderBlock2D","UpDecoderBlock2D"],
+}
+
+VAE_CONFIG_SDXL={
+  "_class_name": "AutoencoderKL",
+  "_diffusers_version": "0.20.0.dev0",
+  "_name_or_path": "",
+  "act_fn": "silu",
+  "block_out_channels": [128,256,512,512],
+  "down_block_types": ["DownEncoderBlock2D","DownEncoderBlock2D","DownEncoderBlock2D","DownEncoderBlock2D"],
+  "force_upcast": True,
+  "in_channels": 3,
+  "latent_channels": 4,
+  "layers_per_block": 2,
+  "norm_num_groups": 32,
+  "out_channels": 3,
+  "sample_size": 1024,
+  "scaling_factor": 0.13025,
+  "up_block_types": ["UpDecoderBlock2D","UpDecoderBlock2D","UpDecoderBlock2D","UpDecoderBlock2D"],
+}
+
+VAE_CONFIG_SD3 = {
+  "_class_name": "AutoencoderKL",
+  "_diffusers_version": "0.29.0.dev0",
+  "act_fn": "silu",
+  "block_out_channels": [128,256,512,512],
+  "down_block_types": ["DownEncoderBlock2D","DownEncoderBlock2D","DownEncoderBlock2D","DownEncoderBlock2D"],
+  "force_upcast": True,
+  "in_channels": 3,
+  "latent_channels": 16,
+  "latents_mean": None,
+  "latents_std": None,
+  "layers_per_block": 2,
+  "norm_num_groups": 32,
+  "out_channels": 3,
+  "sample_size": 1024,
+  "scaling_factor": 1.5305,
+  "shift_factor": 0.0609,
+  "up_block_types": ["UpDecoderBlock2D","UpDecoderBlock2D","UpDecoderBlock2D","UpDecoderBlock2D"],
+  "use_post_quant_conv": False,
+  "use_quant_conv": False
+}
+
+VAE_CONFIG_FLUX = {
+  "_class_name": "AutoencoderKL",
+  "_diffusers_version": "0.30.0.dev0",
+  "_name_or_path": "../checkpoints/flux-dev",
+  "act_fn": "silu",
+  "block_out_channels": [128,256,512,512],
+  "down_block_types": ["DownEncoderBlock2D","DownEncoderBlock2D","DownEncoderBlock2D","DownEncoderBlock2D"],
+  "force_upcast": True,
+  "in_channels": 3,
+  "latent_channels": 16,
+  "latents_mean": None,
+  "latents_std": None,
+  "layers_per_block": 2,
+  "mid_block_add_attention": True,
+  "norm_num_groups": 32,
+  "out_channels": 3,
+  "sample_size": 1024,
+  "scaling_factor": 0.3611,
+  "shift_factor": 0.1159,
+  "up_block_types": ["UpDecoderBlock2D","UpDecoderBlock2D","UpDecoderBlock2D","UpDecoderBlock2D"],
+  "use_post_quant_conv": False,
+  "use_quant_conv": False
+}
+VAE_CONFIGS = [VAE_CONFIG_SD1, VAE_CONFIG_SD2, VAE_CONFIG_SDXL, VAE_CONFIG_SD3, VAE_CONFIG_FLUX]
+
+from diffusers.loaders.single_file_utils import convert_ldm_vae_checkpoint
+
+#### Load VAE ####################################################    
+def load_VAE(t, path):
+    vae_config = VAE_CONFIGS[t.sdver]
+    state_dict = load_torch_file(path,safe_load=True)
+    state_dict = convert_ldm_vae_checkpoint(state_dict, vae_config)
+    vae = AutoencoderKL(**vae_config)
+    vae.eval()
+    print("VAE is loaded from", path)
+    return vae

@@ -14,7 +14,6 @@ import safetensors.torch
 
 from pprint import pprint
 from accelerate.utils import set_seed
-from diffusers.models import AutoencoderKL
 
 try:
     from modules import sd_models, sd_vae, shared, prompt_parser, lowvram
@@ -125,7 +124,7 @@ def train_main(jsononly_or_paths, mode, modelname, vaename, *args):
     if standalone:
         if not os.path.exists(modelname):
             checkpoint_filename = os.path.join(t.models_dir, modelname) if hasattr(t, "models_dir") else modelname
-        state_dict = load_torch_file(checkpoint_filename)
+        state_dict = trainer.load_torch_file(checkpoint_filename)
         model_version = detect_model_version(state_dict)
         del state_dict
         flush()
@@ -180,9 +179,7 @@ def train_main(jsononly_or_paths, mode, modelname, vaename, *args):
         vae_path = sd_vae.vae_dict.get(vaename, None)
         
     if not vae:
-        vae = AutoencoderKL.from_single_file(vae_path) if vae_path is not None else None
-
-    print("VAE: ", type(vae))
+        vae = trainer.load_VAE(t, vae_path) if vae_path is not None else None
 
     if t.is_sdxl: 
         text_model, unet, vae = trainer.load_checkpoint_model_xl(checkpoint_filename, t, vae = vae)
@@ -214,15 +211,14 @@ def train_main(jsononly_or_paths, mode, modelname, vaename, *args):
 
     vae = vae.to(CUDA, dtype=t.train_model_precision)
     t.vae = vae
-    print(type(t.vae))
-
+    
     t.text2cond = text2cond
     t.image2latent = image2latent
 
     t.noise_scheduler = trainer.load_noise_scheduler("ddpm", t.model_v_pred)
 
     t.a = trainer.make_accelerator(t)
-    
+
     t.unet = t.a.prepare(t.unet)
     t.text_model.text_encoders = ModuleList([t.a.prepare(te) if te is not None else None for te in t.text_model.text_encoders])
 
@@ -231,7 +227,7 @@ def train_main(jsononly_or_paths, mode, modelname, vaename, *args):
     makesavelist(t)
     
     if standalone:
-        with t.a.autocast():
+        with torch.no_grad(), t.a.autocast():
             t.orig_cond, t.orig_vector  = t.text_model.encode_text(t.prompts[0])
             t.targ_cond, t.targ_vector  = t.text_model.encode_text(t.prompts[1])
             t.un_cond, t.un_vector = t.text_model.encode_text(t.prompts[2])
@@ -348,7 +344,7 @@ def train_lora(t):
                 lr_scheduler.step()
                 optimizer.zero_grad()
 
-                del noise_pred
+                del noise_pred, noise
 
                 flush()
 
@@ -562,7 +558,7 @@ def train_diff2(t):
             orig_conds2 = batch["orig_conds2"] if "orig_conds2" in batch else (torch.cat([t.orig_vector] * batch_size) if isinstance(t.orig_vector, torch.Tensor) else None)
             targ_conds1 = batch["targ_conds1"] if "targ_conds1" in batch else torch.cat([t.targ_cond] * batch_size)
             targ_conds2 = batch["targ_conds2"] if "targ_conds2" in batch else (torch.cat([t.targ_vector] * batch_size) if isinstance(t.targ_vector, torch.Tensor) else None)
-
+            
             orig_added_cond_kwargs = get_added_cond_kwargs(t, orig_conds2, batch_size, size = [*orig_latent.shape[2:4]]) if orig_conds2 is not None else None 
             targ_added_cond_kwargs = get_added_cond_kwargs(t, targ_conds2, batch_size, size = [*targ_latent.shape[2:4]]) if targ_conds2 is not None else None 
 
@@ -593,12 +589,12 @@ def train_diff2(t):
             targ_noisy_latents = t.noise_scheduler.add_noise(targ_latent if turn else orig_latent, noise, timesteps)
 
             with torch.no_grad(), t.a.autocast(): 
-                orig_noise_pred = t.unet(orig_noisy_latents, timesteps, orig_conds1, added_cond_kwargs = orig_added_cond_kwargs).sample 
-
+                orig_noise_pred = t.unet(orig_noisy_latents, timesteps, orig_conds1, added_cond_kwargs = orig_added_cond_kwargs).sample
+            
             network.set_multiplier(0.25 if turn else - 0.25 * abs(t.diff_alt_ratio))
+
             with t.a.autocast():
                 targ_noise_pred = t.unet(targ_noisy_latents, timesteps, targ_conds1, added_cond_kwargs = targ_added_cond_kwargs).sample
-
             network.set_multiplier(0)
 
             if t.diff_use_diff_mask and "mask" in batch:
@@ -613,11 +609,11 @@ def train_diff2(t):
             pbar.update(1)
             if t.logging_save_csv:
                 savecsv(t, pbar.n, loss_ema, [x.cpu().item() if isinstance(x, torch.Tensor)  else x for x in lr_scheduler.get_last_lr()],t.csvpath)
-
+            
+            optimizer.zero_grad()
             t.a.backward(loss)
             optimizer.step()
             lr_scheduler.step()
-            optimizer.zero_grad()
 
             flush()
             
@@ -749,13 +745,14 @@ def image2latent(t,image):
     image = numpy.moveaxis(image, 2, 0)
     image = torch.from_numpy(image).unsqueeze(0)
     image = image * 2 - 1
-    image = image.to(CUDA,dtype=t.train_model_precision)
+    image = image.to(CUDA,dtype=torch.float)
     with torch.no_grad():
+        t.vae.to(torch.float)
         latent = t.vae.encode(image) 
         if isinstance(latent, torch.Tensor):
-            return (latent - t.vae_shift_factor) * t.vae_scale_factor
+            return ((latent - t.vae_shift_factor) * t.vae_scale_factor).to(t.train_model_precision)
         else:
-            return (latent.latent_dist.sample() - t.vae_shift_factor) * t.vae_scale_factor
+            return ((latent.latent_dist.sample() - t.vae_shift_factor) * t.vae_scale_factor).to(t.train_model_precision)
 
 def text2cond(t, prompt):
     if not standalone:
@@ -852,28 +849,6 @@ def metadator(t):
     }
     
 #### StandAlone ####################################################
-def load_torch_file(ckpt, safe_load=False, device=None):
-    if device is None:
-        device = torch.device("cpu")
-    if ckpt.lower().endswith(".safetensors"):
-        sd = safetensors.torch.load_file(ckpt, device=device.type)
-    else:
-        if safe_load:
-            if not 'weights_only' in torch.load.__code__.co_varnames:
-                print("Warning torch.load doesn't support weights_only on this pytorch version, loading unsafely.")
-                safe_load = False
-        if safe_load:
-            pl_sd = torch.load(ckpt, map_location=device, weights_only=True)
-        else:
-            pl_sd = torch.load(ckpt, map_location=device, pickle_module=checkpoint_pickle)
-        if "global_step" in pl_sd:
-            print(f"Global Step: {pl_sd['global_step']}")
-        if "state_dict" in pl_sd:
-            sd = pl_sd["state_dict"]
-        else:
-            sd = pl_sd
-    return sd
-
 def detect_model_version(state_dict):
     flux_test_key = "model.diffusion_model.double_blocks.0.img_attn.norm.key_norm.scale"
     sd3_test_key = "model.diffusion_model.final_layer.adaLN_modulation.1.bias"
