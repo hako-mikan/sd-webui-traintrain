@@ -745,14 +745,15 @@ def image2latent(t,image):
     image = numpy.moveaxis(image, 2, 0)
     image = torch.from_numpy(image).unsqueeze(0)
     image = image * 2 - 1
-    image = image.to(CUDA,dtype=torch.float)
+    image = image.to(CUDA,dtype=t.train_VAE_precision)
     with torch.no_grad():
-        t.vae.to(torch.float)
-        latent = t.vae.encode(image) 
+        t.vae.to(t.train_VAE_precision)
+        latent = t.vae.encode(image)
+        print(latent.latent_dist.sample().dtype)
         if isinstance(latent, torch.Tensor):
-            return ((latent - t.vae_shift_factor) * t.vae_scale_factor).to(t.train_model_precision)
+            return ((latent - t.vae_shift_factor) * t.vae_scale_factor)
         else:
-            return ((latent.latent_dist.sample() - t.vae_shift_factor) * t.vae_scale_factor).to(t.train_model_precision)
+            return ((latent.latent_dist.sample() - t.vae_shift_factor) * t.vae_scale_factor)
 
 def text2cond(t, prompt):
     if not standalone:

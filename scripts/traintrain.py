@@ -95,6 +95,7 @@ train_max_timesteps = ["train_max_timesteps", "TX",None,1000,int, ALL]
 train_textencoder_learning_rate = ["train_textencoder_learning_rate","TX",None,"",float,LORA]
 train_model_precision = ["train_model_precision","DD",PRECISION_TYPES[:3],"fp16",str,ALL]
 train_lora_precision = ["train_lora_precision","DD",PRECISION_TYPES[:3],"fp32",str,ALL]
+train_VAE_precision = ["train_VAE_precision","DD",PRECISION_TYPES[:3],"fp32",str,ALL]
 image_buckets_step = ["image_buckets_step", "DD",IMAGESTEPS,"256",int,LORA_MDIFF]
 image_num_multiply = ["image_num_multiply", "TX",None,1,int,LORA_MDIFF]
 image_min_length = ["image_min_length", "TX",None,512,int,LORA_MDIFF]
@@ -154,7 +155,7 @@ o_column1 = [network_resume,network_strength,network_conv_rank,network_conv_alph
 o_column2 = [train_textencoder_learning_rate,train_seed,train_min_timesteps,train_max_timesteps,train_loss_function,train_lr_step_rules, train_lr_warmup_steps, train_lr_scheduler_num_cycles,train_lr_scheduler_power, 
                      train_snr_gamma,save_per_steps,diff_alt_ratio,
                      diff_revert_original_target,diff_use_diff_mask]
-o_column3 = [train_model_precision, train_lora_precision,save_precision,diff_load_1st_pass, diff_save_1st_pass,diff_1st_pass_only,
+o_column3 = [train_model_precision, train_lora_precision,save_precision,train_VAE_precision,diff_load_1st_pass, diff_save_1st_pass,diff_1st_pass_only,
                     logging_save_csv,logging_verbose,save_overwrite, save_as_json,model_v_pred]
 
 trainer.all_configs = r_column1 + r_column2 + r_column3 + row1 + o_column1 + o_column2 + o_column3 + [use_2nd_pass_settings]
