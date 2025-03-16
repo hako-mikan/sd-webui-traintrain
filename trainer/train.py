@@ -529,7 +529,7 @@ def train_diff2(t):
     t.dataloader = dataset.ContinualRandomDataLoader(dataloaders)
     t.dataloader = (t.a.prepare(t.dataloader))
 
-    t.a.print("Train Multi-Difference Start")
+    t.a.print("Train ADDifT Start")
 
     if not t.dataloader.data:
         return "No data!"
