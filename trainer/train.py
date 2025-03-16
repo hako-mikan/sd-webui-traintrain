@@ -749,7 +749,6 @@ def image2latent(t,image):
     with torch.no_grad():
         t.vae.to(t.train_VAE_precision)
         latent = t.vae.encode(image)
-        print(latent.latent_dist.sample().dtype)
         if isinstance(latent, torch.Tensor):
             return ((latent - t.vae_shift_factor) * t.vae_scale_factor)
         else:
