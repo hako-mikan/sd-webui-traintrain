@@ -1023,6 +1023,7 @@ def load_VAE(t, path):
     state_dict = load_torch_file(path,safe_load=True)
     state_dict = convert_ldm_vae_checkpoint(state_dict, vae_config)
     vae = AutoencoderKL(**vae_config)
+    vae.load_state_dict(state_dict, strict=False)
     vae.eval()
     print("VAE is loaded from", path)
     return vae
