@@ -122,6 +122,7 @@ def train_main(jsononly_or_paths, mode, modelname, vaename, *args):
     print(" Start Training!")
 
     if standalone:
+        checkpoint_filename = modelname
         if not os.path.exists(modelname):
             checkpoint_filename = os.path.join(t.models_dir, modelname) if hasattr(t, "models_dir") else modelname
         state_dict = trainer.load_torch_file(checkpoint_filename)
@@ -488,7 +489,11 @@ def make_diff_lora(t, copy):
         with network, t.a.autocast():
             noise_pred = t.unet(noisy_latents, timesteps, torch.cat([t.orig_cond] * batch_size), added_cond_kwargs = added_cond_kwargs).sample
 
-        loss, loss_ema, loss_velocity = process_loss(t, noise_pred, noise, timesteps, loss_ema, loss_velocity, copy)
+        target = noise
+        if t.model_v_pred:
+            target = t.noise_scheduler.get_velocity(image_latent, noise, timesteps)
+
+        loss, loss_ema, loss_velocity = process_loss(t, noise_pred, target, timesteps, loss_ema, loss_velocity, copy)
 
         c_lrs = [f"{x:.2e}" for x in lr_scheduler.get_last_lr()]
 
@@ -547,6 +552,8 @@ def train_diff2(t):
 
     pbar = tqdm(range(t.train_iterations))
     epoch = 0
+    time_min = t.train_min_timesteps
+    time_max = t.train_max_timesteps
     while t.train_iterations >= pbar.n + 1:
         for batch in t.dataloader:
             orig_latent = batch["orig_latent"]
