@@ -709,6 +709,10 @@ def get_gr_themas():
 if not standalone:
     class GenParamGetter(scripts.Script):
         events_assigned = False
+
+        def on_app_started(self, demo: gr.Blocks, app):
+            self.get_params_components(demo, app)
+
         def title(self):
             return "TrainTrain Generation Parameter Getter"
         
@@ -812,4 +816,3 @@ if not standalone:
 
     if __package__ == "traintrain":
         script_callbacks.on_ui_tabs(on_ui_tabs)
-        script_callbacks.on_app_started(GenParamGetter.get_params_components)
