@@ -142,11 +142,11 @@ def train_main(jsononly_or_paths, mode, modelname, vaename, tename, *args):
         if vae_path is not None and not os.path.exists(vaename):
             if hasattr(t, "vae_dir"):
                 vae_path = os.path.join(t.vae_dir, vae_path)
-        text_encoder = None
-        te_path = None if vaename in ["", "None"] else tename
+                
+        te_path = None if tename in ["", "None"] else tename
         if te_path is not None and not os.path.exists(tename):
             if hasattr(t, "te_dir"):
-                te_path = os.path.join(t.vae_dir, te_path)
+                te_path = os.path.join(t.te_dir, te_path)
 
     else:
         currentinfo = shared.sd_model.sd_checkpoint_info if hasattr(shared.sd_model, "sd_checkpoint_info") else None
@@ -662,9 +662,8 @@ def train_diff2(t):
 
             with torch.no_grad(), t.a.autocast(): 
                 if t.is_zimage:
-                    orig_noise_pred, _ = t.unet(orig_noisy_latents, timesteps_z, orig_conds1)
+                    orig_noise_pred, _ = t.unet(orig_noisy_latents, timesteps_z, [orig_conds1])
                     orig_noise_pred = -torch.stack(orig_noise_pred,dim=0).squeeze(dim=2)
-                    print(orig_noise_pred.shape)
                 else:
                     orig_noise_pred = t.unet(orig_noisy_latents, timesteps, orig_conds1, added_cond_kwargs = orig_added_cond_kwargs).sample
             
@@ -672,7 +671,7 @@ def train_diff2(t):
 
             with t.a.autocast():
                 if t.is_zimage:
-                    targ_noise_pred, _ = t.unet(targ_noisy_latents, timesteps_z, targ_conds1)
+                    targ_noise_pred, _ = t.unet(targ_noisy_latents, timesteps_z, [targ_conds1])
                     targ_noise_pred = -torch.stack(targ_noise_pred,dim=0).squeeze(dim=2)
                 else:
                     targ_noise_pred = t.unet(targ_noisy_latents, timesteps, targ_conds1, added_cond_kwargs = targ_added_cond_kwargs).sample

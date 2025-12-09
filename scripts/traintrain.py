@@ -17,7 +17,8 @@ except:
     standalone = True
     
 if standalone:
-    from traintrain.trainer import train, trainer, te_list, EXTENTIONS
+    from traintrain.trainer import train, trainer
+    from traintrain.trainer.trainer import te_list, EXTENTIONS
     from modules.launch_utils import args
 else:
     from trainer import train, trainer, gen
@@ -285,9 +286,9 @@ def on_ui_tabs():
                 with gr.Column():
                     with gr.Row(equal_height=True):
                         if standalone:
-                            vae_list = get_models_list("te")
-                            if type(vae_list) is list:
-                                te = gr.Dropdown(choices=["None"] + vae_list, value="None", label="VAE", elem_id="traintrain_load_model", allow_custom_value=True)
+                            te_list = get_models_list("te")
+                            if type(te_list) is list:
+                                te = gr.Dropdown(choices=["None"] + te_list, value="None", label="Text Encoder", elem_id="traintrain_load_model", allow_custom_value=True)
                             else:
                                 te = gr.Textbox(value="", label="Text Encoder", elem_id="traintrain_load_model")
                         else:
@@ -700,7 +701,7 @@ def get_models_list(model):
         te_path = ""
         if args.models_dir:
             root = args.models_dir
-            te_path = os.path.join(root, "text_encoder")
+            te_path = os.path.join(root, "TextEncoders")
         if args.te_dir:
             te_path = args.ckpt_dir
         if not te_path or not os.path.exists(te_path):

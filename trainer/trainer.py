@@ -2,8 +2,6 @@ import torch, json, os, ast, warnings, gc, sys, subprocess, safetensors.torch
 import torch.nn as nn
 import gradio as gr
 from safetensors.torch import load_file
-from pipelines.transformer_z_image import ZImageTransformer2DModel
-from pipelines.pipeline_z_image import ZImagePipeline
 from datetime import datetime
 from typing import Literal
 from diffusers.optimization import get_scheduler
@@ -41,6 +39,8 @@ CPU = torch.device("cpu")
 try:
     from modules.scripts import basedir
     from modules import shared, paths
+    from pipelines.transformer_z_image import ZImageTransformer2DModel
+    from pipelines.pipeline_z_image import ZImagePipeline
     standalone = False
     path_root = basedir()
     path_trainer = os.path.join(path_root, "trainer")
@@ -52,6 +52,8 @@ except:
     path_trainer = os.path.join(path_root, "trainer")
     standalone = True
     from modules.launch_utils import args
+    from traintrain.pipelines.transformer_z_image import ZImageTransformer2DModel
+    from traintrain.pipelines.pipeline_z_image import ZImagePipeline
 
 all_configs = []
 
@@ -78,7 +80,7 @@ class Trainer():
             jsononly = False
         else:
             if standalone:
-                paths = [args.models_dir, args.ckpt_dir, args.vae_dir, args.lora_dir]
+                paths = [args.models_dir, args.ckpt_dir, args.vae_dir, args.lora_dir, args.te_dir]
             else:
                 paths = None
                 
@@ -308,12 +310,15 @@ class Trainer():
             self.save_dir = os.path.join(paths[0],"lora")
             self.models_dir = os.path.join(paths[0],"StableDiffusion")
             self.vae_dir = os.path.join(paths[0],"VAE")
+            self.te_dir = os.path.join(paths[0],"TextEncoders")
         if paths[1] is not None:#model
             self.models_dir = paths[1]
         if paths[2] is not None:#vae
             self.vae_dir = paths[2]
         if paths[3] is not None:#lora
             self.save_dir = paths[3]
+        if paths[4] is not None:#text encoder
+            self.te_dir = paths[4]
 
 def import_json(name, preset = False, cli = False):
     def find_files(file_name):
@@ -736,12 +741,16 @@ def load_checkpoint_model_zimage(checkpoint_path, t, vae_path=None, te_path=None
                 return v.dtype
         return torch.float32
 
-    zbase = os.path.join(".", "backend", "huggingface", "Tongyi-MAI", "Z-Image-Turbo")
+    if standalone:
+        zbase = os.path.join(".", "huggingface", "Z-Image-Turbo")
+    else:
+        zbase = os.path.join(".", "backend", "huggingface", "Tongyi-MAI", "Z-Image-Turbo")
+        
     print("[Z-Image Loader] Loading text encoder config from:", os.path.join(zbase, "text_encoder"))
 
     te_config = AutoConfig.from_pretrained(os.path.join(zbase, "text_encoder"), trust_remote_code=True, local_files_only=True)
 
-    if not (t.mode == "ADDifT" or t.mode == "Multi-ADDifT") and te_path is not None:
+    if standalone or (not (t.mode == "ADDifT" or t.mode == "Multi-ADDifT") and te_path is not None):
         te_state = load_file(te_path)
         print("TextEncoder StateDict has been read.")
         te_dtype = detect_state_dict_dtype(te_state)
@@ -1025,7 +1034,6 @@ def make_accelerator(t):
     return accelerator
 
 def parse_precision(precision, mode = True):
-    print(precision, mode)
     if mode:
         if precision == "fp32" or precision == "float32":
             return torch.float32

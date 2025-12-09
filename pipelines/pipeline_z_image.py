@@ -37,7 +37,7 @@ from diffusers.utils import logging
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.utils import replace_example_docstring
 
-from pipelines.transformer_z_image import ZImageTransformer2DModel
+from .transformer_z_image import ZImageTransformer2DModel
 
 @dataclass
 class ZImagePipelineOutput(BaseOutput):
