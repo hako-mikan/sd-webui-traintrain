@@ -15,6 +15,7 @@ requirements = [
 "matplotlib",
 "schedulefree",
 "pytorch-optimizer",
+"torchao",
 ]
 
 def is_installed(pip_package):

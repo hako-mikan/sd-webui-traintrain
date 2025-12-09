@@ -1,21 +1,19 @@
-import json
-import os
-import ast
-import warnings
-import torch
-import subprocess
-import sys
+import torch, json, os, ast, warnings, gc, sys, subprocess, safetensors.torch
 import torch.nn as nn
 import gradio as gr
+from safetensors.torch import load_file
+from pipelines.transformer_z_image import ZImageTransformer2DModel
+from pipelines.pipeline_z_image import ZImagePipeline
 from datetime import datetime
 from typing import Literal
 from diffusers.optimization import get_scheduler
 from transformers.optimization import AdafactorSchedule
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from torch.optim.lr_scheduler import CosineAnnealingLR, ExponentialLR, CosineAnnealingWarmRestarts, StepLR, MultiStepLR, ReduceLROnPlateau, CyclicLR, OneCycleLR
 from pprint import pprint
 from accelerate import Accelerator
 from pathlib import Path
-import safetensors.torch
+from torchao.quantization import int8_weight_only, quantize_
 from diffusers.models import AutoencoderKL
 from diffusers import (
     StableDiffusionPipeline,
@@ -37,9 +35,12 @@ from diffusers import (
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
+CUDA = torch.device("cuda:0")
+CPU = torch.device("cpu")
+
 try:
     from modules.scripts import basedir
-    from modules import shared
+    from modules import shared, paths
     standalone = False
     path_root = basedir()
     path_trainer = os.path.join(path_root, "trainer")
@@ -56,6 +57,7 @@ all_configs = []
 
 PASS2 = "2nd pass"
 POs = ["came", "tiger", "adammini"]
+EXTENTIONS = ("ckpt", "pt", "pth", "bin", "safetensors", "sft", "gguf")
 
 jsonspath = os.path.join(path_root,"jsons")
 logspath = os.path.join(path_root,"logs")
@@ -70,7 +72,7 @@ OPTIMIZERS = ["AdamW", "AdamW8bit", "AdaFactor", "Lion", "Prodigy", SEP,
                "PagedAdamW", "PagedAdamW32bit", "SGDNesterov", "Adam",]
 
 class Trainer():
-    def __init__(self, jsononly, model, vae, mode, values):
+    def __init__(self, jsononly, model, vae, te, mode, values):
         if type(jsononly) is list:
             paths = jsononly
             jsononly = False
@@ -83,6 +85,7 @@ class Trainer():
         self.values = values
         self.mode = mode
         self.use_8bit = False
+        self.read_model_dtype = False
         self.count_dict = {}
         self.metadata = {}
 
@@ -110,7 +113,7 @@ class Trainer():
         self.prompts = values[clen:clen + 3]
         self.images =  values[clen + 3:]
         
-        self.add_dcit = {"mode": mode, "model": model, "vae": vae, "original prompt": self.prompts[0],"target prompt": self.prompts[1]}
+        self.add_dcit = {"mode": mode, "model": model, "vae": vae,"te": te, "original prompt": self.prompts[0],"target prompt": self.prompts[1]}
 
         self.export_json(jsononly)
         if paths is not None:
@@ -140,9 +143,11 @@ class Trainer():
                         print(f"ERROR, input value for {sets[0]} : {sets[4]} is invalid, use default value {sets[3]}")
                     value = sets[3]
             if "precision" in sets[0]:
-                if sets[0] == "train_model_precision" and value == "fp8":
-                    self.use_8bit == True
+                if sets[0] == "train_model_precision" and value == "int8":
+                    self.use_8bit = True
                     print("Use 8bit Model Precision")
+                if sets[0] == "train_model_precision" and value == "model":
+                    self.read_model_dtype = True
                 value = parse_precision(value)
 
             if "diff_load_1st_pass" == sets[0]:
@@ -246,17 +251,20 @@ class Trainer():
     def sd_typer(self, ver = None):
         if ver is None:
             model = shared.sd_model
+            print(type(model).__name__ )
             self.is_sd1 = type(model).__name__ == "StableDiffusion" or getattr(model,'is_sd1', False)
             self.is_sd2 = type(model).__name__ == "StableDiffusion2" or getattr(model,'is_sd2', False)
             self.is_sdxl = type(model).__name__ == "StableDiffusionXL" or getattr(model,'is_sdxl', False)
             self.is_sd3 = type(model).__name__ == "StableDiffusion3" or getattr(model,'is_sd2', False)
-            self.is_flux = type(model).__name__ == "Flux" or getattr(model,'is_flux', False)
+            self.is_flux = type(model).__name__ == "Flux" and getattr(model,'is_flux', False)
+            self.is_zimage = type(model).__name__ == "ZImage" and getattr(model,'is_flux', False)
         else:
             self.is_sd1 = ver == 0
             self.is_sd2 = ver == 1
             self.is_sdxl = ver == 2
             self.is_sd3 = ver == 3
             self.is_flux = ver == 4
+            self.is_zimage = ver == 5
 
         #sdver: 0:sd1 ,1:sd2, 2:sdxl, 3:sd3, 4:flux
         if self.is_sdxl:
@@ -279,13 +287,18 @@ class Trainer():
             self.vae_scale_factor = 0.3611
             self.vae_shift_factor = 0.1159
             self.sdver = 4
+        elif self.is_zimage:
+            self.model_version = "zimage"
+            self.vae_scale_factor = 0.3611
+            self.vae_shift_factor = 0.1159
+            self.sdver = 5
         else:
             self.model_version = "sd_v1"
             self.vae_scale_factor = 0.18215
             self.vae_shift_factor = 0
             self.sdver = 0
         
-        self.is_dit = self.is_sd3 or self.is_flux
+        self.is_dit = self.is_sd3 or self.is_flux or self.is_zimage
         self.is_te2 = self.is_sdxl or self.is_sd3
 
         print("Base Model : ", self.model_version)
@@ -585,6 +598,7 @@ def prepare_scheduler_for_custom_training(noise_scheduler):
     all_snr = (alpha / sigma) ** 2
 
     noise_scheduler.all_snr = all_snr.to("cuda")
+    
 
 def load_checkpoint_model(checkpoint_path, t, clip_skip = None, vae = None):
     pipe = StableDiffusionPipeline.from_single_file(checkpoint_path,upcast_attention=True if t.is_sd2 else False)
@@ -608,6 +622,10 @@ def load_checkpoint_model(checkpoint_path, t, clip_skip = None, vae = None):
         clip_skip
     )
     
+    if t.use_8bit:
+        quantize_(unet, int8_weight_only())
+        t.train_model_precision = unet.dtype
+    
     del pipe
     return text_model, unet, vae
 
@@ -627,6 +645,11 @@ def load_checkpoint_model_xl(checkpoint_path, t, vae = None):
         t.sdver,
     )
     del pipe
+    
+    if t.use_8bit:
+        quantize_(unet, int8_weight_only())
+        t.train_model_precision = unet.dtype
+    
     return text_model, unet, vae
 
 def load_checkpoint_model_sd3(checkpoint_path, t, vae = None, clip_l = None, clip_g = None, t5 = None):
@@ -650,6 +673,12 @@ def load_checkpoint_model_sd3(checkpoint_path, t, vae = None, clip_l = None, cli
     )
     
     del pipe
+    
+    if t.use_8bit:
+        quantize_(unet, int8_weight_only())
+        t.train_model_precision = unet.dtype
+        TextModel.quantize()
+    
     return text_model, unet, vae
 
 def load_checkpoint_model_flux(checkpoint_path, t, vae = None, clip_l = None, clip_g = None, t5 = None):
@@ -671,13 +700,163 @@ def load_checkpoint_model_flux(checkpoint_path, t, vae = None, clip_l = None, cl
     )
     
     del pipe
+    
+    if t.use_8bit:
+        quantize_(unet, int8_weight_only())
+        t.train_model_precision = unet.dtype
+        TextModel.quantize()
+    
     return text_model, unet, vae
 
+try:
+    with open(os.path.join(path_root, "pipelines", "configs.json"), 'r', encoding='utf-8') as f:
+        master_config = json.load(f)
+except:
+    master_config = {}
+
+def materialize_remaining_meta_tensors(model, device="cpu", dtype=torch.bfloat16):
+    for name, module in model.named_modules():
+        for p_name, param in module.named_parameters(recurse=False):
+            if param.device.type == 'meta':
+                print(f"Materializing missing parameter: {name}.{p_name}")
+                new_param = torch.nn.Parameter(torch.empty(param.size(), device=device, dtype=dtype))
+                setattr(module, p_name, new_param)
+
+        for b_name, buffer in module.named_buffers(recurse=False):
+            if buffer.device.type == 'meta':
+                print(f"Materializing missing buffer: {name}.{b_name}")
+                new_buffer = torch.empty(buffer.size(), device=device, dtype=dtype)
+                setattr(module, b_name, new_buffer)
+                
+def load_checkpoint_model_zimage(checkpoint_path, t, vae_path=None, te_path=None):
+
+    def detect_state_dict_dtype(state_dict):
+        for _, v in state_dict.items():
+            if torch.is_tensor(v):
+                return v.dtype
+        return torch.float32
+
+    zbase = os.path.join(".", "backend", "huggingface", "Tongyi-MAI", "Z-Image-Turbo")
+    print("[Z-Image Loader] Loading text encoder config from:", os.path.join(zbase, "text_encoder"))
+
+    te_config = AutoConfig.from_pretrained(os.path.join(zbase, "text_encoder"), trust_remote_code=True, local_files_only=True)
+
+    if not (t.mode == "ADDifT" or t.mode == "Multi-ADDifT") and te_path is not None:
+        te_state = load_file(te_path)
+        print("TextEncoder StateDict has been read.")
+        te_dtype = detect_state_dict_dtype(te_state)
+        print(f"[TextEncoder] Detected dtype: {te_dtype}")
+        with torch.device("meta"):
+            text_encoder = AutoModelForCausalLM.from_config(te_config, trust_remote_code=True, torch_dtype=te_dtype)
+        missing, unexpected = text_encoder.load_state_dict(te_state, strict=False, assign=True)
+        print("[TextEncoder] missing keys:", missing)
+        print("[TextEncoder] unexpected keys:", unexpected)
+        if missing:
+            print("Materializing missing TextEncoder parameters...")
+            materialize_remaining_meta_tensors(text_encoder, dtype=te_dtype)
+        tokenizer = AutoTokenizer.from_pretrained(os.path.join(zbase, "tokenizer"), trust_remote_code=True, local_files_only=True)
+        print("[Z-Image Loader] Loading transformer config from:", os.path.join(zbase, "transformer"))
+        if t.use_8bit:
+            quantize_(text_encoder, int8_weight_only())
+        text_encoder = text_encoder.to(CPU)
+    else:
+        text_encoder, tokenizer = None, None
+
+    tr_config = ZImageTransformer2DModel.load_config(os.path.join(zbase, "transformer"))
+    tr_state = load_file(checkpoint_path)
+    tr_state = remap_zimage_transformer_state_dict(tr_state)
+    tr_dtype = detect_state_dict_dtype(tr_state)
+    print(f"[Transformer] Detected dtype: {tr_dtype}")
+    with torch.device("meta"):
+        transformer = ZImageTransformer2DModel.from_config(tr_config, torch_dtype=tr_dtype)
+    missing, unexpected = transformer.load_state_dict(tr_state, strict=False, assign=True)   
+    print("[Transformer] missing keys:", missing)
+    print("[Transformer] unexpected keys:", unexpected)
+    if missing:
+        print("Materializing missing Transformer parameters...")
+        materialize_remaining_meta_tensors(transformer, dtype=tr_dtype)
+    if t.use_8bit:
+        quantize_(transformer, int8_weight_only())
+        t.train_model_precision = transformer.dtype
+    if t.read_model_dtype:
+        t.train_model_precision = transformer.dtype
+    transformer = transformer.to(CPU)
+
+    if isinstance(vae_path, (str, os.PathLike)):
+        vae_config = AutoencoderKL.load_config(os.path.join(zbase, "vae"))
+        vae_state = load_file(vae_path)
+        vae_dtype = detect_state_dict_dtype(vae_state)
+        print(f"[VAE] Detected dtype: {vae_dtype}")
+        with torch.device("meta"):
+            vae = AutoencoderKL.from_config(vae_config, torch_dtype=vae_dtype)
+        missing, unexpected = vae.load_state_dict(vae_state, strict=False, assign=True)
+        vae = vae.to(CPU)
+    else:
+        vae = vae_path
+
+    pipe = ZImagePipeline(transformer=transformer,text_encoder=text_encoder,tokenizer=tokenizer,vae=vae,scheduler=None)
+
+    text_model = TextModel(tn3 = pipe.tokenizer, te3 = pipe.text_encoder, sdver = t.sdver)
+    transformer = pipe.transformer
+    vae = pipe.vae
+    
+    del pipe
+    flush()
+    return text_model, transformer, vae
+
+def remap_zimage_transformer_state_dict(sd: dict) -> dict:
+    new_sd = {}
+
+    for k, v in sd.items():
+        new_k = None
+        if k.startswith("x_embedder."):
+            suffix = k[len("x_embedder."):]
+            new_k = f"all_x_embedder.2-1.{suffix}"
+
+        elif k.startswith("final_layer."):
+            suffix = k[len("final_layer."):]
+            new_k = f"all_final_layer.2-1.{suffix}"
+
+        elif ".attention.q_norm." in k:
+            new_k = k.replace(".attention.q_norm.", ".attention.norm_q.")
+
+        elif ".attention.k_norm." in k:
+            new_k = k.replace(".attention.k_norm.", ".attention.norm_k.")
+
+        elif ".attention.out." in k:
+            new_k = k.replace(".attention.out.", ".attention.to_out.0.")
+
+        elif k.endswith(".attention.qkv.weight"):
+            base = k.replace(".attention.qkv.weight", "")
+
+            q_w, k_w, v_w = torch.chunk(v, 3, dim=0)
+
+            new_sd[f"{base}.attention.to_q.weight"] = q_w
+            new_sd[f"{base}.attention.to_k.weight"] = k_w
+            new_sd[f"{base}.attention.to_v.weight"] = v_w
+            continue 
+
+        elif k.endswith(".attention.qkv.bias"):
+            base = k.replace(".attention.qkv.bias", "")
+            q_b, k_b, v_b = torch.chunk(v, 3, dim=0)
+            new_sd[f"{base}.attention.to_q.bias"] = q_b
+            new_sd[f"{base}.attention.to_k.bias"] = k_b
+            new_sd[f"{base}.attention.to_v.bias"] = v_b
+            continue
+
+        else:
+            new_k = k
+
+        new_sd[new_k] = v
+
+    return new_sd
+
+
 class TextModel(nn.Module):
-    def __init__(self, cl_tn, cl_en, cg_tn, cg_en, t5_tn, t5_en, sdver, clip_skip=-1):
+    def __init__(self, tn1 = None, te1 = None, tn2 = None, te2 = None, tn3 = None, te3 = None, sdver = 0, clip_skip=-1):
         super().__init__()
-        self.tokenizers = [cl_tn, cg_tn, t5_tn]
-        self.text_encoders = nn.ModuleList([cl_en, cg_en, t5_en])
+        self.tokenizers = [tn1, tn2, tn3]
+        self.text_encoders = nn.ModuleList([te1, te2, te3])
         self.clip_skip = clip_skip if clip_skip is not None else -1
         self.textual_inversion = False
         self.sdver = sdver
@@ -698,7 +877,7 @@ class TextModel(nn.Module):
             tokens.append(token)
         return tokens
 
-    #sdver: 0:sd1 ,1:sd2, 2:sdxl, 3:sd3, 4:flux
+    #sdver: 0:sd1 ,1:sd2, 2:sdxl, 3:sd3, 4:flux 5:zimage
     def forward(self, tokens):
         if 2 > self.sdver:
             return self.encode_sd1_2(tokens)
@@ -708,7 +887,9 @@ class TextModel(nn.Module):
             return self.encode_sd3(tokens)
         elif self.sdver == 4:
             return self.encode_flux(tokens)
-
+        elif self.sdver == 5:
+            return self.encode_zimage(tokens)
+        
     def encode_sd1_2(self, tokens):
         encoder_hidden_states = self.text_encoders[0](tokens[0], output_hidden_states=True).hidden_states[self.clip_skip]
         encoder_hidden_states = self.text_encoders[0].text_model.final_layer_norm(encoder_hidden_states)
@@ -774,9 +955,31 @@ class TextModel(nn.Module):
 
         return encoder_hidden_states, pooled_output
 
+    def encode_zimage(self, prompt):
+        max_sequence_length = 1024
+        prompt = [prompt]
+
+        for i, prompt_item in enumerate(prompt):
+            messages = [{"role": "user", "content": prompt_item},]
+            prompt_item = self.tokenizers[2].apply_chat_template(messages,tokenize=False,add_generation_prompt=True,enable_thinking=True)
+            prompt[i] = prompt_item
+
+        text_inputs = self.tokenizers[2](prompt,padding="max_length",max_length=max_sequence_length,truncation=True,return_tensors="pt")
+
+        text_input_ids = text_inputs.input_ids.to(CUDA)
+        prompt_masks = text_inputs.attention_mask.to(CUDA).bool()
+        prompt_embeds = self.text_encoders[2](input_ids=text_input_ids,attention_mask=prompt_masks,output_hidden_states=True).hidden_states[-2]
+        embeddings_list = []
+        for i in range(len(prompt_embeds)):
+            embeddings_list.append(prompt_embeds[i][prompt_masks[i]])
+        return embeddings_list[0], None
+
     def encode_text(self, texts):
-        tokens = self.tokenize(texts)
-        encoder_hidden_states, pooled_output = self.forward(tokens)
+        if self.sdver == 5:
+            encoder_hidden_states, pooled_output = self.encode_zimage(texts)
+        else:
+            tokens = self.tokenize(texts)
+            encoder_hidden_states, pooled_output = self.forward(tokens)
         return encoder_hidden_states, pooled_output
 
     def gradient_checkpointing_enable(self, enable=True):
@@ -791,11 +994,24 @@ class TextModel(nn.Module):
                 if te is not None:
                     te.gradient_checkpointing_disable()
 
-    def to(self, device = None, dtype = None):
-        for te in self.text_encoders:
+    def to(self, device=None, dtype=None):
+        super().to(device=device)
+        for i, te in enumerate(self.text_encoders):
             if te is not None:
-                te = te.to(device,dtype)
+                self.text_encoders[i] = te.to(device=device, dtype=dtype)
+        return self
+    
+    def apop(self):
+        for i, te in enumerate(self.text_encoders):
+            if te is not None:
+                self.text_encoders[i] = self.text_encoders[i].to("cpu")
+            self.text_encoders[i] = None 
 
+    def quantize(self):
+        for i, te in enumerate(self.text_encoders):
+            if te is not None:
+                quantize_(self.text_encoders[i], int8_weight_only())
+                
 def install(package):
     subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
@@ -804,10 +1020,12 @@ def make_accelerator(t):
         gradient_accumulation_steps=t.gradient_accumulation_steps,
         mixed_precision=parse_precision(t.train_model_precision, mode = False)
     )
+    print(parse_precision(t.train_model_precision, mode = False))
 
     return accelerator
 
 def parse_precision(precision, mode = True):
+    print(precision, mode)
     if mode:
         if precision == "fp32" or precision == "float32":
             return torch.float32
@@ -815,6 +1033,10 @@ def parse_precision(precision, mode = True):
             return torch.float16
         elif precision == "bf16" or precision == "bfloat16":
             return torch.bfloat16
+        elif precision == "model":
+            return torch.float16
+        elif precision == "int8":
+            return torch.float16
     else:
         if precision == torch.float16 or precision == "fp8":
             return 'fp16'
@@ -896,7 +1118,10 @@ def load_lr_scheduler(t, optimizer):
 
 def load_torch_file(ckpt, safe_load=False, device=None):
     if not safe_load:
-        from modules import checkpoint_pickle
+        try:
+            from modules import checkpoint_pickle
+        except:
+            safe_load = True
     if device is None:
         device = torch.device("cpu")
     if ckpt.lower().endswith(".safetensors"):
@@ -1013,7 +1238,7 @@ VAE_CONFIG_FLUX = {
   "use_post_quant_conv": False,
   "use_quant_conv": False
 }
-VAE_CONFIGS = [VAE_CONFIG_SD1, VAE_CONFIG_SD2, VAE_CONFIG_SDXL, VAE_CONFIG_SD3, VAE_CONFIG_FLUX]
+VAE_CONFIGS = [VAE_CONFIG_SD1, VAE_CONFIG_SD2, VAE_CONFIG_SDXL, VAE_CONFIG_SD3, VAE_CONFIG_FLUX, VAE_CONFIG_FLUX]
 
 from diffusers.loaders.single_file_utils import convert_ldm_vae_checkpoint
 
@@ -1027,3 +1252,43 @@ def load_VAE(t, path):
     vae.eval()
     print("VAE is loaded from", path)
     return vae
+
+#### TextEncoders ################################################
+te_list = {}
+
+try:
+    te_paths: set[str] = {
+        os.path.abspath(os.path.join(paths.models_path, "text_encoder")),
+        *shared.cmd_opts.text_encoder_dirs,
+    }
+
+    def find_files_with_extensions(base_path, extensions):
+        found_files = {}
+        for root, _, files in os.walk(base_path):
+            for file in files:
+                if any(file.endswith(ext) for ext in extensions):
+                    full_path = os.path.join(root, file)
+                    found_files[file] = full_path
+        return found_files
+
+    for te_paths in te_paths:
+        te_paths = find_files_with_extensions(te_paths, EXTENTIONS)
+        te_list.update(te_paths)
+except Exception as e: 
+    print(e)
+    
+def read_arbitrary_config(name):
+    config_path = os.path.join(path_root, f"{name}.json")
+
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"No config.json file found in the directory: {path_root}")
+
+    with open(config_path, "rt", encoding="utf-8") as file:
+        config_data = json.load(file)
+
+    return config_data
+
+def flush():
+    torch.cuda.empty_cache()
+    torch.cuda.ipc_collect()
+    gc.collect()

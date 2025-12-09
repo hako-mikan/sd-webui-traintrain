@@ -21,10 +21,23 @@ def make_dataloaders(t):
         if test: save_images(t, key, t.image_buckets_raw[key])
         dataset = LatentsConds(t, t.image_buckets[key])
         if dataset.__len__() > 0:
-            dataloaders.append(DataLoader(dataset, batch_size=t.train_batch_size, shuffle=True))
+            dataloaders.append(DataLoader(dataset, batch_size=t.train_batch_size, shuffle=True, collate_fn = flexible_collate_fn if t.is_zimage else None))
         
     return dataloaders
 
+import torch
+from torch.utils.data import default_collate
+
+def flexible_collate_fn(batch):
+    output = {}
+    for key in batch[0].keys():
+        l = [d[key] for d in batch]
+        if key == "cond1":
+            output[key] = l
+        else:
+            output[key] = torch.stack(l)
+    return output
+    
 class ContinualRandomDataLoader:
     def __init__(self, dataloaders):
         self.original_dataloaders = dataloaders
@@ -67,6 +80,7 @@ class LatentsConds(Dataset):
         self.latents_conds = self.latents_conds * t.image_num_multiply
         if t.train_batch_size > len(self.latents_conds):
             self.latents_conds = self.latents_conds * t.train_batch_size
+        self.is_zimage = t.is_zimage
 
     def __len__(self):
         return len(self.latents_conds)
@@ -318,7 +332,7 @@ def load_text_files(file_path):
             return file.read()
 
 def encode_image_text(t):
-    with torch.no_grad(), t.a.autocast():
+    with torch.no_grad():
         emp1, emp2 = t.text_model.encode_text(t.lora_trigger_word)
         bar = tqdm(total = t.total_images)
         for key in t.image_buckets_raw:

@@ -17,7 +17,7 @@ except:
     standalone = True
     
 if standalone:
-    from traintrain.trainer import train, trainer
+    from traintrain.trainer import train, trainer, te_list, EXTENTIONS
     from modules.launch_utils import args
 else:
     from trainer import train, trainer, gen
@@ -33,7 +33,7 @@ BLOCKID17=["BASE","IN01","IN02","IN04","IN05","IN07","IN08","M00","OUT03","OUT04
 BLOCKID12=["BASE","IN04","IN05","IN07","IN08","M00","OUT00","OUT01","OUT02","OUT03","OUT04","OUT05"]
 BLOCKID20=["BASE","IN00","IN01","IN02","IN03","IN04","IN05","IN06","IN07","IN08","M00","OUT00","OUT01","OUT02","OUT03","OUT04","OUT05","OUT06","OUT07","OUT08"]
 
-PRECISION_TYPES = ["fp32", "bf16", "fp16", "float32", "bfloat16", "float16"]
+PRECISION_TYPES = ["model", "fp32", "bf16", "fp16", "int8", "float32", "bfloat16", "float16"]
 NETWORK_TYPES = ["lierla", "c3lier","loha"]
 NETWORK_DIMS = [str(2**x) for x in range(11)]
 NETWORK_ALPHAS = [str(2**(x-5)) for x in range(16)]
@@ -93,9 +93,9 @@ train_seed = ["train_seed", "TX",None,-1,int, ALL]
 train_min_timesteps = ["train_min_timesteps", "TX",None,0,int, ALL]
 train_max_timesteps = ["train_max_timesteps", "TX",None,1000,int, ALL]
 train_textencoder_learning_rate = ["train_textencoder_learning_rate","TX",None,"",float,LORA]
-train_model_precision = ["train_model_precision","DD",PRECISION_TYPES[:3],"fp16",str,ALL]
-train_lora_precision = ["train_lora_precision","DD",PRECISION_TYPES[:3],"fp32",str,ALL]
-train_VAE_precision = ["train_VAE_precision","DD",PRECISION_TYPES[:3],"fp32",str,ALL]
+train_model_precision = ["train_model_precision","DD",PRECISION_TYPES[:5],"fp16",str,ALL]
+train_lora_precision = ["train_lora_precision","DD",PRECISION_TYPES[1:4],"fp32",str,ALL]
+train_VAE_precision = ["train_VAE_precision","DD",PRECISION_TYPES[1:4],"fp32",str,ALL]
 image_buckets_step = ["image_buckets_step", "DD",IMAGESTEPS,"256",int,LORA_MDIFF]
 image_num_multiply = ["image_num_multiply", "TX",None,1,int,LORA_MDIFF]
 image_min_length = ["image_min_length", "TX",None,512,int,LORA_MDIFF]
@@ -105,7 +105,7 @@ image_mirroring =  ["image_mirroring", "CH",None,False,bool,LORA_MDIFF]
 image_use_filename_as_tag =  ["image_use_filename_as_tag", "CH",None,False,bool,LORA_MDIFF]
 image_disable_upscale = ["image_disable_upscale", "CH",None,False,bool,LORA_MDIFF]
 save_per_steps = ["save_per_steps", "TX",None,0,int,ALL]
-save_precision = ["save_precision","DD",PRECISION_TYPES[:3],"fp16",str,ALL]
+save_precision = ["save_precision","DD",PRECISION_TYPES[:4],"fp16",str,ALL]
 save_overwrite = ["save_overwrite", "CH",None,False,bool,ALL]
 save_as_json = ["save_as_json", "CH",None,False,bool,NDIFF2]
 
@@ -259,10 +259,11 @@ def on_ui_tabs():
             with gr.Row(equal_height=True):
                 with gr.Column():
                     mode = gr.Radio(label="Mode", choices= MODES, value = "LoRA")
+            with gr.Row(equal_height=True):
                 with gr.Column():
                     with gr.Row(equal_height=True):
                         if standalone:
-                            model_list = get_models_list(False)
+                            model_list = get_models_list("model")
                             if type(model_list) is list:
                                 model = gr.Dropdown(model_list,elem_id="model_converter_model_name",label="Model",interactive=True, allow_custom_value=True)
                             else:
@@ -273,15 +274,25 @@ def on_ui_tabs():
                 with gr.Column():
                     with gr.Row(equal_height=True):
                         if standalone:
-                            vae_list = get_models_list(True)
+                            vae_list = get_models_list("vae")
                             if type(vae_list) is list:
-                                vae = gr.Dropdown(choices=["None"] + vae_list, value="None", label="VAE", elem_id="modelmerger_bake_in_vae", allow_custom_value=True)
+                                vae = gr.Dropdown(choices=["None"] + vae_list, value="None", label="VAE", elem_id="traintrain_load_model", allow_custom_value=True)
                             else:
-                                vae = gr.Textbox(value="", label="VAE", elem_id="modelmerger_bake_in_vae")
+                                vae = gr.Textbox(value="", label="VAE", elem_id="traintrain_load_model")
                         else:
-                            vae = gr.Dropdown(choices=["None"] + list(sd_vae.vae_dict), value="None", label="VAE", elem_id="modelmerger_bake_in_vae")
+                            vae = gr.Dropdown(choices=["None"] + list(sd_vae.vae_dict), value="None", label="VAE", elem_id="traintrain_load_model")
                             create_refresh_button(vae, sd_vae.refresh_vae_list, lambda: {"choices": ["None"] + list(sd_vae.vae_dict)}, "modelmerger_refresh_bake_in_vae")
-
+                with gr.Column():
+                    with gr.Row(equal_height=True):
+                        if standalone:
+                            vae_list = get_models_list("te")
+                            if type(vae_list) is list:
+                                te = gr.Dropdown(choices=["None"] + vae_list, value="None", label="VAE", elem_id="traintrain_load_model", allow_custom_value=True)
+                            else:
+                                te = gr.Textbox(value="", label="Text Encoder", elem_id="traintrain_load_model")
+                        else:
+                            te = gr.Dropdown(choices=["None"] + list(trainer.te_list.keys()), value="None", label="Text Encoder", elem_id="traintrain_load_model")
+                            create_refresh_button(te, sd_vae.refresh_vae_list, lambda: {"choices": ["None"] + list(sd_vae.vae_dict)}, "modelmerger_refresh_bake_in_vae")
             dummy = gr.Checkbox(visible=False, value = False)
 
             gr.HTML(value="Required Parameters(+prompt in iLECO, +images in Difference)")
@@ -415,9 +426,9 @@ def on_ui_tabs():
         angle_bg.click(change_angle_bg,[dtrue, image_dir, save_dir, input_image,output_name, num_of_images ,change_angle,max_tilting_angle, change_scale, min_scale, fix_side], [image_result])
         angle_bg_i.click(change_angle_bg,[dfalse, image_dir, save_dir, input_image,output_name, num_of_images ,change_angle,max_tilting_angle, change_scale, min_scale, fix_side], [image_result])
 
-        start.click(train.train, [dfalse, mode, model, vae, *train_settings_1, *train_settings_2, *prompts, *in_images],[result])
-        queue.click(train.queue, [dfalse, mode, model, vae, *train_settings_1, *train_settings_2, *prompts, *in_images],[result])
-        savepreset.click(savepreset_f, [dtrue, mode, model, vae, *train_settings_1, *train_settings_2, *prompts, *in_images], [presets])
+        start.click(train.train, [dfalse, mode, model, vae, te, *train_settings_1, *train_settings_2, *prompts, *in_images],[result])
+        queue.click(train.queue, [dfalse, mode, model, vae, te, *train_settings_1, *train_settings_2, *prompts, *in_images],[result])
+        savepreset.click(savepreset_f, [dtrue, mode, model, vae, te, *train_settings_1, *train_settings_2, *prompts, *in_images], [presets])
         refleshpreset.click(lambda : gr.update(choices=load_preset(None)), outputs = [presets])
 
         reload_queue.click(train.get_del_queue_list, outputs= queue_list)
@@ -642,7 +653,7 @@ def getjsonlist():
 
 import os
 
-def get_models_list(vae):
+def get_models_list(model):
     def list_files_with_extensions(directory: str, extensions: list) -> list:
         """
         指定されたディレクトリ内の特定の拡張子のファイルをリストアップする。
@@ -662,7 +673,7 @@ def get_models_list(vae):
                     file_list.append(relative_path)
         return file_list
     
-    if vae:
+    if model=="vae":
         vae_path = ""
         if args.models_dir:
             root = args.models_dir
@@ -671,8 +682,8 @@ def get_models_list(vae):
             vae_path = args.vae_dir
         if not vae_path or not os.path.exists(vae_path):
             return ""
-        return list_files_with_extensions(vae_path, [".safetensors", ".pt"])
-    else:
+        return list_files_with_extensions(vae_path, trainer.EXTENTIONS)
+    elif model=="model":
         sd_path = ""
         if args.models_dir:
             root = args.models_dir
@@ -684,8 +695,18 @@ def get_models_list(vae):
             sd_path = args.ckpt_dir
         if not sd_path or not os.path.exists(sd_path):
             return ""
-        return list_files_with_extensions(sd_path, [".safetensors", ".ckpt"])
-
+        return list_files_with_extensions(sd_path, trainer.EXTENTIONS)
+    elif model=="te":
+        te_path = ""
+        if args.models_dir:
+            root = args.models_dir
+            te_path = os.path.join(root, "text_encoder")
+        if args.te_dir:
+            te_path = args.ckpt_dir
+        if not te_path or not os.path.exists(te_path):
+            return ""
+        return list_files_with_extensions(te_path, trainer.EXTENTIONS)
+    
 def get_gr_themas():
     if not standalone:
         return None

@@ -11,6 +11,7 @@ BLOCKID17=["BASE","IN01","IN02","IN04","IN05","IN07","IN08","M00","OUT03","OUT04
 BLOCKID12=["BASE","IN04","IN05","IN07","IN08","M00","OUT00","OUT01","OUT02","OUT03","OUT04","OUT05"]
 BLOCKID20=["BASE","IN00","IN01","IN02","IN03","IN04","IN05","IN06","IN07","IN08","M00","OUT00","OUT01","OUT02","OUT03","OUT04","OUT05","OUT06","OUT07","OUT08"]
 BLOCKIDFLUX = ["CLIP", "T5", "IN"] + ["D{:002}".format(x) for x in range(19)] + ["S{:002}".format(x) for x in range(38)] + ["OUT"] # Len: 61
+BLOCKIDZIMAGE = ["QWEN3", "IN"] + ["S{:002}".format(x) for x in range(30)] + ["OUT"] # Len: 33
 BLOCKIDSD35 = ["CLIPG", "CLIPL", "T5", "IN"] + ["J{:002}".format(x) for x in range(24)] + ["OUT"] #4 + 24 + 1 = 29
 BLOCKNUMS = [12,17,20,26, len(BLOCKIDFLUX),  len(BLOCKIDSD35)] #61, 29
 BLOCKIDS=[BLOCKID12,BLOCKID17,BLOCKID20,BLOCKID26,BLOCKIDFLUX]
@@ -64,8 +65,8 @@ LORA_PREFIX_TEXT_ENCODER2 = "lora_te2"
 LORA_LINEAR = ["Linear", "LoRACompatibleLinear"]
 LORA_CONV = ["Conv2d", "LoRACompatibleConv"]
 
-MMDIT_TARGET_REPLACE_MODULE = ["JointTransformerBlock", "FluxTransformerBlock", "FluxSingleTransformerBlock", "AuraFlowJointTransformerBlock", "AuraFlowSingleTransformerBlock"]
-LORA_PREFIX_MMDIT = 'lora_transformer'
+MMDIT_TARGET_REPLACE_MODULE = ["ZImageTransformerBlock", "JointTransformerBlock", "FluxTransformerBlock", "FluxSingleTransformerBlock", "AuraFlowJointTransformerBlock", "AuraFlowSingleTransformerBlock", "JointTransformerBlock"]
+LORA_PREFIX_MMDIT = 'diffusion_model'
 
 PREFIXLIST = [
     LORA_PREFIX_UNET,
@@ -179,7 +180,7 @@ class LoRANetwork(nn.Module):
 
         t.lora_te_target = TEXT_ENCODER_TARGET_REPLACE_MODULE
 
-        self.unet_loras = self.load_fromfile(t, 5 if t.is_dit else 0) if t.network_resume else self.create_modules(t, 5 if t.is_dit else 0)
+        self.unet_loras = self.load_fromfile(t, 4 if t.is_dit else 0) if t.network_resume else self.create_modules(t, 4 if t.is_dit else 0)
         
         if "BASE" in t.network_blocks:# and t.mode == "LoRA":
             self.te_loras = self.load_fromfile(t, 2 if t.is_te2 else 1) if t.network_resume else self.create_modules(t, 2 if t.is_te2 else 1)
@@ -211,9 +212,9 @@ class LoRANetwork(nn.Module):
 
         prefix = PREFIXLIST[ut]
 
-        target = t.lora_te_target if ut > 0 else t.lora_unet_target
+        target = t.lora_te_target if ut in [1,2,3] else t.lora_unet_target
 
-        if ut == 0:
+        if ut == 0 or ut == 4:
             root_modules = t.unet.named_modules()
         elif ut ==1 or ut == 2:
             root_modules = t.text_model.text_encoders[0].named_modules()
@@ -221,7 +222,10 @@ class LoRANetwork(nn.Module):
             root_modules = t.text_model.text_encoders[1].named_modules()
 
         for name, module in root_modules:
+            #print(name, module.__class__.__name__)
             if module.__class__.__name__ in target:
+                if "layers" not in name and ut == 4:
+                    continue
                 for child_name, child_module in module.named_modules():
                     is_linear = child_module.__class__.__name__ in LORA_LINEAR
                     is_conv2d = child_module.__class__.__name__ in LORA_CONV
@@ -240,7 +244,7 @@ class LoRANetwork(nn.Module):
                         lora_name = prefix + "." + name + "." + child_name
                         lora_name = lora_name.replace(".", "_")
 
-                        key = convert_diffusers_name_to_compvis(lora_name,t.is_sd2)
+                        key = convert_diffusers_name_to_compvis(lora_name,t.is_sd2) if ut < 4 else lora_name
 
                         currentblock = "BASE"
                         for i,block in enumerate(BLOCKS):
@@ -248,7 +252,7 @@ class LoRANetwork(nn.Module):
                                 if i == 26:
                                     i = 0
                                 currentblock = BLOCKID26[i]
-                        if currentblock not in t.network_blocks:
+                        if ut < 4 and currentblock not in t.network_blocks:
                             continue
 
                         if is_linear or is_conv2d_1x1:
@@ -258,7 +262,7 @@ class LoRANetwork(nn.Module):
                             dim = self.conv_lora_dim
                             alpha = self.conv_alpha
 
-                        # print(f"{lora_name}")
+                        #print(f"{lora_name}")
                         t.db(key)
                         lora = self.module(
                             lora_name, child_module, 1, dim, alpha)
@@ -281,6 +285,8 @@ class LoRANetwork(nn.Module):
             root_modules = t.text_model.text_encoders[0].named_modules()
         elif ut ==3:
             root_modules = t.text_model.text_encoders[1].named_modules()
+        elif ut ==4:
+            root_modules = t.text_model.text_encoders[2].named_modules()
 
         if os.path.splitext(file)[1] == ".safetensors":
             from safetensors.torch import load_file, safe_open
@@ -291,13 +297,16 @@ class LoRANetwork(nn.Module):
         for name, module in root_modules:
             if module.__class__.__name__ in target:
                 for child_name, child_module in module.named_modules():
-                    lora_name = prefix + "." + name + "." + child_name
-                    lora_name = lora_name.replace(".", "_")
+                    if ut < 4:
+                        lora_name = prefix + "." + name + "." + child_name
+                        lora_name = lora_name.replace(".", "_")
+                    else:
+                        lora_name = "diffusion_model" + "." + name + "." + child_name
 
                     if lora_name + ".alpha" in weights_sd:
                         alpha = weights_sd[lora_name + ".alpha"]
-                        up = weights_sd[lora_name + ".lora_up.weight"]
-                        down = weights_sd[lora_name + ".lora_down.weight"]
+                        up = weights_sd[lora_name + ".lora_up.weight"] if ut < 4 else weights_sd[lora_name + ".lora_A.weight"] 
+                        down = weights_sd[lora_name + ".lora_down.weight"] if ut < 4 else weights_sd[lora_name + ".lora_B.weight"] 
                         dim = down.shape[0]
                         lora = self.module(
                             lora_name, child_module, 1, dim, alpha,  up_weight = up, down_weight = down)
@@ -341,7 +350,7 @@ class LoRANetwork(nn.Module):
                 state_dict[key] = v
 
         for key in list(state_dict.keys()):
-            if not key.startswith("lora"):
+            if not key.startswith("lora") and not t.is_zimage:
                 del state_dict[key]
 
         if t.network_strength != 1:
@@ -349,6 +358,12 @@ class LoRANetwork(nn.Module):
                 if "lora_up" in key or "lora_down" in key:
                     state_dict[key] = state_dict[key] * t.network_strength ** 0.5
 
+        if t.is_zimage:
+            outdict = {}
+            for key in list(state_dict.keys()):
+                outdict[self.fix_keys_zimage(key)] = state_dict[key]
+            state_dict = outdict
+            
         base, ext = os.path.splitext(file)
         attempt = 0
         while True:
@@ -364,7 +379,9 @@ class LoRANetwork(nn.Module):
                 attempt += 1
                 file = f"{base}_{attempt}{ext}"  # ファイル名を変更
                 print(f"Retrying with filename {file}...")
-        
+                if attempt > 1000:
+                    file = "Error saving LoRA"
+                    break
         return file
 
     def __enter__(self):
@@ -384,6 +401,15 @@ class LoRANetwork(nn.Module):
     def set_multiplier(self, num):
         for lora in self.unet_loras + self.te_loras:
             lora.multiplier = num
+            
+    def fix_keys_zimage(self, key):
+        new = key.replace("_",".")
+        for target in ["adaLN.modulation","to.k","to.out","to.q","to.v","feed.forward","diffusion.model","noise.refiner",".norm","context.refiner"]:
+            if target in new:
+                new = new.replace(target, target.replace(".","_"))
+        new = new.replace("lora_up","lora_A")
+        new = new.replace("lora_down","lora_B")     
+        return new
 
 from lycoris.modules.loha import LohaModule
 from lycoris.modules.norms import NormModule
