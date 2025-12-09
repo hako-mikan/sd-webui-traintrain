@@ -426,7 +426,7 @@ def train_leco(t):
                 timesteps = timesteps.long()
             added_cond_kwargs = get_added_cond_kwargs(t, t.targ_vector, t.train_batch_size)
             if t.is_zimage:
-                targ_pred, _ = t.unet(latents, timesteps, t.targ_cond)
+                targ_pred, _ = t.unet(latents, timesteps, [t.targ_cond])
                 targ_pred = -torch.stack(targ_pred,dim=0).squeeze(dim=2)
             else:
                 targ_pred = t.unet(latents, timesteps, t.targ_cond, added_cond_kwargs = added_cond_kwargs).sample
@@ -435,7 +435,7 @@ def train_leco(t):
 
         with network, t.a.autocast():
             if t.is_zimage:
-                orig_pred, _ = t.unet(latents, timesteps, t.orig_cond)
+                orig_pred, _ = t.unet(latents, timesteps, [t.orig_cond])
                 orig_pred = -torch.stack(orig_pred,dim=0).squeeze(dim=2)
             else:
                 orig_pred = t.unet(latents, timesteps, t.orig_cond, added_cond_kwargs = added_cond_kwargs).sample
