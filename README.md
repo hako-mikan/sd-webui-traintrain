@@ -7,6 +7,8 @@
 [<img src="https://img.shields.io/badge/Support-%E2%99%A5-magenta.svg?logo=github&style=plastic" height="25" />](https://github.com/sponsors/hako-mikan)
 
 # Recent Update
+2025.12.09 Support Z-Image Turbo
+
 Standalone training is now supported. For details, please refer to the [Standalone Environment Setup Repository](https://github.com/hako-mikan/traintrain-standalone).
 
 - Added new training method ADDifT
@@ -161,3 +163,4 @@ This code is based on [Plat](https://github.com/p1atdev)'s [LECO](https://github
 - https://github.com/KohakuBlueleaf/LyCORIS
 
 - https://github.com/ntc-ai/conceptmod
+
