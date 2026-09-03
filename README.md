@@ -98,6 +98,14 @@ Learn LoRA from images.
 ## ADDifT  
 Creates a LoRA from two difference images. Unlike copier learning, this method directly trains the LoRA on the differences, making it significantly faster. It does not train copier LoRAs. Set the images for `"Original"` and `"Target"` and ensure they have the same size. Properly adjusting the min/max timesteps is crucial for effective learning, depending on the target subject. For actions or decorations like opening/closing eyes, set Min = 500 and Max = 1000. For art styles, Min = 200 and Max = 400 work well. The number of training iterations should be around 30 to 100; exceeding this may lead to overfitting. The batch size should be set to 1. Although increasing the batch size is possible, reducing the number of training iterations would be necessary, so keeping a small batch size and increasing iterations generally yields better results.
 
+> [!NOTE]
+> On the flow matching models - Z-Image, Anima, Krea2 - min/max timesteps are
+> read as a thousandth of the noise level, so the same numbers mean the same
+> place in the schedule. The result is much stronger than on the SD family
+> though: an Anima difference LoRA that is unusable at strength 1 behaves like a
+> normal slider at 0.1, in the same direction. Either use it at that strength or
+> set `network strength` to about 0.1 so the saved file is calibrated for 1.
+
 ## Multi-ADDift  
 Creates a difference LoRA from multiple sets of two images. It follows the same directory-based approach as LoRA training, with pairs determined by file names. The training pairs are formed using images and those specified with the `"diff target name."` For example, if the `"diff target name"` is `"_closed_eyes,"` the method will pair images like `"image1.png, image2.png"` with `"image1_closed_eyes.png, image2_closed_eyes.png"` for training. As with standard LoRA training, loaded images are bucketed based on their size. For more details, refer to [Image Resizing & Mirroring](#Image-Resizing-&-Mirroring).
 
