@@ -137,6 +137,10 @@ def train_main(jsononly_or_paths, mode, modelname, vaename, tename, *args):
         del state_dict
         flush()
         t.sd_typer(ver=model_version)
+
+    if getattr(t, "is_anima", False) or getattr(t, "is_krea", False):
+        return f"{t.model_version} cannot be trained yet: TrainTrain builds its own diffusers model and there is no diffusers implementation of this transformer here. Detection and the latent normalisation are in place."
+
         vae = None
         vae_path = None if vaename in ["", "None"] else vaename
         if vae_path is not None and not os.path.exists(vaename):
@@ -171,6 +175,9 @@ def train_main(jsononly_or_paths, mode, modelname, vaename, tename, *args):
             
         te_path = trainer.te_list[tename] if tename != "None" else None
         t.sd_typer()
+
+    if getattr(t, "is_anima", False) or getattr(t, "is_krea", False):
+        return f"{t.model_version} cannot be trained yet: TrainTrain builds its own diffusers model and there is no diffusers implementation of this transformer here. Detection and the latent normalisation are in place."
 
         checkpoint_filename = shared.sd_model.sd_checkpoint_info.filename
 
@@ -830,10 +837,18 @@ def image2latent(t,image):
     with torch.no_grad():
         t.vae.to(t.train_VAE_precision)
         latent = t.vae.encode(image)
-        if isinstance(latent, torch.Tensor):
-            return ((latent - t.vae_shift_factor) * t.vae_scale_factor)
-        else:
-            return ((latent.latent_dist.sample() - t.vae_shift_factor) * t.vae_scale_factor)
+        if not isinstance(latent, torch.Tensor):
+            latent = latent.latent_dist.sample()
+
+        mean, std = getattr(t, "vae_latents_mean", None), getattr(t, "vae_latents_std", None)
+        if mean is not None and std is not None:
+            # the Wan autoencoder of Anima and Krea2 is normalised per channel
+            shape = [1, -1] + [1] * (latent.dim() - 2)
+            mean = torch.tensor(mean, device=latent.device, dtype=latent.dtype).view(shape)
+            std = torch.tensor(std, device=latent.device, dtype=latent.dtype).view(shape)
+            return (latent - mean) * t.vae_scale_factor / std
+
+        return ((latent - t.vae_shift_factor) * t.vae_scale_factor)
 
 def text2cond(t, prompt):
     if not standalone:
@@ -964,6 +979,11 @@ def detect_model_version(state_dict):
     legacy_test_key = "model.diffusion_model.input_blocks.4.1.transformer_blocks.0.attn2.to_k.weight"
     zimage_key1 = "context_refiner.0.attention.k_norm.weight"
     zimage_key2 = "model.diffusion_model.context_refiner.0.attention.k_norm.weight"
+    anima_keys = ("llm_adapter.blocks.0.cross_attn.q_proj.weight",
+                  "net.llm_adapter.blocks.0.cross_attn.q_proj.weight",
+                  "model.diffusion_model.llm_adapter.blocks.0.cross_attn.q_proj.weight")
+    krea_keys = ("txtfusion.projector.weight",
+                 "model.diffusion_model.txtfusion.projector.weight")
 
     if legacy_test_key in state_dict:
         match state_dict[legacy_test_key].shape[1]:
@@ -981,5 +1001,9 @@ def detect_model_version(state_dict):
         return 3
     elif zimage_key1 in state_dict or zimage_key2 in state_dict:
         return 5
+    elif any(k in state_dict for k in anima_keys):
+        return 6
+    elif any(k in state_dict for k in krea_keys):
+        return 7
     else:
         return -1

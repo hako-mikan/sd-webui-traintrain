@@ -90,6 +90,13 @@ except Exception as _zimage_error:
 
 all_configs = []
 
+# The Wan autoencoder used by Anima and Krea2 normalises each latent channel with
+# its own mean and standard deviation instead of one scale and shift.
+WAN_LATENTS_MEAN = [-0.7571, -0.7089, -0.9113, 0.1075, -0.1745, 0.9653, -0.1517, 1.5508,
+                    0.4134, -0.0715, 0.5517, -0.3632, -0.1922, -0.9497, 0.2503, -0.2921]
+WAN_LATENTS_STD = [2.8184, 1.4541, 2.3275, 2.6558, 1.2196, 1.7708, 2.6052, 2.0743,
+                   3.2687, 2.1526, 2.8652, 1.5579, 1.6382, 1.1253, 2.8251, 1.9160]
+
 PASS2 = "2nd pass"
 POs = ["came", "tiger", "adammini"]
 EXTENTIONS = ("ckpt", "pt", "pth", "bin", "safetensors", "sft", "gguf")
@@ -108,6 +115,8 @@ OPTIMIZERS = ["AdamW", "AdamW8bit", "AdaFactor", "Lion", "Prodigy", SEP,
 
 class Trainer():
     def __init__(self, jsononly, model, vae, te, mode, values):
+        self.is_anima = self.is_krea = False
+        self.vae_latents_mean = self.vae_latents_std = None
         if type(jsononly) is list:
             paths = jsononly
             jsononly = False
@@ -286,13 +295,20 @@ class Trainer():
     def sd_typer(self, ver = None):
         if ver is None:
             model = shared.sd_model
-            print(type(model).__name__ )
-            self.is_sd1 = type(model).__name__ == "StableDiffusion" or getattr(model,'is_sd1', False)
-            self.is_sd2 = type(model).__name__ == "StableDiffusion2" or getattr(model,'is_sd2', False)
-            self.is_sdxl = type(model).__name__ == "StableDiffusionXL" or getattr(model,'is_sdxl', False)
-            self.is_sd3 = type(model).__name__ == "StableDiffusion3" or getattr(model,'is_sd2', False)
-            self.is_flux = type(model).__name__ == "Flux" and getattr(model,'is_flux', False)
-            self.is_zimage = type(model).__name__ == "ZImage" and getattr(model,'is_flux', False)
+            name = type(model).__name__
+            print(name)
+            # Forge Neo's engines only set is_sd1, is_sdxl and is_wan, so the class
+            # name is the reliable signal there and the flags cover A1111. Requiring
+            # both used to leave is_flux and is_zimage permanently False on Neo, and a
+            # Z-Image model was then trained as if it were SD1.
+            self.is_sd1 = name == "StableDiffusion" or getattr(model,'is_sd1', False)
+            self.is_sd2 = name == "StableDiffusion2" or getattr(model,'is_sd2', False)
+            self.is_sdxl = name == "StableDiffusionXL" or getattr(model,'is_sdxl', False)
+            self.is_sd3 = name == "StableDiffusion3" or getattr(model,'is_sd3', False)
+            self.is_flux = name == "Flux" or getattr(model,'is_flux', False)
+            self.is_zimage = name == "ZImage"
+            self.is_anima = name == "Anima"
+            self.is_krea = name == "Krea2"
         else:
             self.is_sd1 = ver == 0
             self.is_sd2 = ver == 1
@@ -300,8 +316,10 @@ class Trainer():
             self.is_sd3 = ver == 3
             self.is_flux = ver == 4
             self.is_zimage = ver == 5
+            self.is_anima = ver == 6
+            self.is_krea = ver == 7
 
-        #sdver: 0:sd1 ,1:sd2, 2:sdxl, 3:sd3, 4:flux
+        #sdver: 0:sd1 ,1:sd2, 2:sdxl, 3:sd3, 4:flux, 5:zimage, 6:anima, 7:krea
         if self.is_sdxl:
             self.model_version = "sdxl_base_v1-0"
             self.vae_scale_factor = 0.13025
@@ -327,13 +345,22 @@ class Trainer():
             self.vae_scale_factor = 0.3611
             self.vae_shift_factor = 0.1159
             self.sdver = 5
+        elif self.is_anima or self.is_krea:
+            # the Wan autoencoder is normalised per channel, not by one scale and
+            # shift, see vae_latents_mean / vae_latents_std below
+            self.model_version = "anima" if self.is_anima else "krea"
+            self.vae_scale_factor = 1.0
+            self.vae_shift_factor = 0
+            self.vae_latents_mean = WAN_LATENTS_MEAN
+            self.vae_latents_std = WAN_LATENTS_STD
+            self.sdver = 6 if self.is_anima else 7
         else:
             self.model_version = "sd_v1"
             self.vae_scale_factor = 0.18215
             self.vae_shift_factor = 0
             self.sdver = 0
         
-        self.is_dit = self.is_sd3 or self.is_flux or self.is_zimage
+        self.is_dit = self.is_sd3 or self.is_flux or self.is_zimage or self.is_anima or self.is_krea
         self.is_te2 = self.is_sdxl or self.is_sd3
 
         print("Base Model : ", self.model_version)
@@ -922,7 +949,7 @@ class TextModel(nn.Module):
             tokens.append(token)
         return tokens
 
-    #sdver: 0:sd1 ,1:sd2, 2:sdxl, 3:sd3, 4:flux 5:zimage
+    #sdver: 0:sd1 ,1:sd2, 2:sdxl, 3:sd3, 4:flux 5:zimage, 6:anima, 7:krea
     def forward(self, tokens):
         if 2 > self.sdver:
             return self.encode_sd1_2(tokens)
@@ -1288,6 +1315,9 @@ from diffusers.loaders.single_file_utils import convert_ldm_vae_checkpoint
 
 #### Load VAE ####################################################    
 def load_VAE(t, path):
+    if t.sdver >= len(VAE_CONFIGS):
+        raise RuntimeError(f"TrainTrain: loading a separate VAE is not supported for {t.model_version}")
+
     vae_config = VAE_CONFIGS[t.sdver]
     state_dict = load_torch_file(path,safe_load=True)
     state_dict = convert_ldm_vae_checkpoint(state_dict, vae_config)
