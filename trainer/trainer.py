@@ -11,7 +11,27 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, ExponentialLR, CosineAnn
 from pprint import pprint
 from accelerate import Accelerator
 from pathlib import Path
-from torchao.quantization import int8_weight_only, quantize_
+try:
+    from torchao.quantization import quantize_
+    try:
+        from torchao.quantization import int8_weight_only
+    except ImportError:
+        # torchao 0.14 replaced the factory functions with config classes, and
+        # dropped int8_weight_only() in 0.18
+        from torchao.quantization import Int8WeightOnlyConfig
+
+        def int8_weight_only(*args, **kwargs):
+            return Int8WeightOnlyConfig(*args, **kwargs)
+except Exception as _torchao_error:
+    # a missing or incompatible torchao must not keep the tab from loading, it is
+    # only needed for the 8bit options
+    print(f"TrainTrain: torchao is unavailable ({_torchao_error}), the 8bit options will not work")
+
+    def int8_weight_only(*args, **kwargs):
+        return None
+
+    def quantize_(*args, **kwargs):
+        raise RuntimeError("TrainTrain: the 8bit options need torchao, which could not be imported")
 from diffusers.models import AutoencoderKL
 from diffusers import (
     StableDiffusionPipeline,
@@ -39,8 +59,6 @@ CPU = torch.device("cpu")
 try:
     from modules.scripts import basedir
     from modules import shared, paths
-    from pipelines.transformer_z_image import ZImageTransformer2DModel
-    from pipelines.pipeline_z_image import ZImagePipeline
     standalone = False
     path_root = basedir()
     path_trainer = os.path.join(path_root, "trainer")
@@ -52,8 +70,23 @@ except:
     path_trainer = os.path.join(path_root, "trainer")
     standalone = True
     from modules.launch_utils import args
-    from traintrain.pipelines.transformer_z_image import ZImageTransformer2DModel
-    from traintrain.pipelines.pipeline_z_image import ZImagePipeline
+
+# The Z-Image pipeline needs a diffusers new enough to have
+# diffusers.models.attention_dispatch. Keep it optional: an older diffusers used to
+# take the whole extension down with it and the tab never appeared. Z-Image only
+# exists on Forge Neo, which ships a new enough diffusers anyway.
+try:
+    if standalone:
+        from traintrain.pipelines.pipeline_z_image import ZImagePipeline
+        from traintrain.pipelines.transformer_z_image import ZImageTransformer2DModel
+    else:
+        from pipelines.pipeline_z_image import ZImagePipeline
+        from pipelines.transformer_z_image import ZImageTransformer2DModel
+    ZIMAGE_AVAILABLE = True
+except Exception as _zimage_error:
+    ZIMAGE_AVAILABLE = False
+    ZImagePipeline = ZImageTransformer2DModel = None
+    print(f"TrainTrain: Z-Image support is unavailable ({_zimage_error})")
 
 all_configs = []
 
@@ -770,6 +803,9 @@ def load_checkpoint_model_zimage(checkpoint_path, t, vae_path=None, te_path=None
         text_encoder = text_encoder.to(CPU)
     else:
         text_encoder, tokenizer = None, None
+
+    if not ZIMAGE_AVAILABLE:
+        raise RuntimeError("TrainTrain: Z-Image needs a newer diffusers, see the message printed at startup")
 
     tr_config = ZImageTransformer2DModel.load_config(os.path.join(zbase, "transformer"))
     tr_state = load_file(checkpoint_path)

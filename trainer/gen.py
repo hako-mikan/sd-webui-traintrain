@@ -3,7 +3,11 @@ from modules import shared, processing, images, sd_samplers
 from modules.ui import  plaintext_to_html
 from modules.shared import opts
 from modules.processing import create_infotext,Processed
-from modules.generation_parameters_copypaste import create_override_settings_dict
+try:
+    from modules.infotext_utils import create_override_settings_dict
+except ImportError:
+    # the module was called generation_parameters_copypaste before A1111 1.8
+    from modules.generation_parameters_copypaste import create_override_settings_dict
 
 paramsnames = None
 

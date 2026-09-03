@@ -6,7 +6,9 @@ from packaging.version import Version
 from packaging.requirements import Requirement
 
 requirements = [
-"diffusers==0.31.0",
+# the webui pins its own diffusers (Forge Neo wants 0.37.1); pinning an exact
+# version here made the two reinstall over each other on every launch
+"diffusers>=0.31.0",
 "safetensors",
 "dadaptation==3.2",
 "prodigyopt",
