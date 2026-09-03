@@ -128,6 +128,8 @@ def train_main(jsononly_or_paths, mode, modelname, vaename, tename, *args):
 
     print(" Start Training!")
 
+    neo_model = None
+
     if standalone:
         checkpoint_filename = modelname
         if not os.path.exists(modelname):
@@ -138,8 +140,8 @@ def train_main(jsononly_or_paths, mode, modelname, vaename, tename, *args):
         flush()
         t.sd_typer(ver=model_version)
 
-    if getattr(t, "is_anima", False) or getattr(t, "is_krea", False):
-        return f"{t.model_version} cannot be trained yet: TrainTrain builds its own diffusers model and there is no diffusers implementation of this transformer here. Detection and the latent normalisation are in place."
+        if t.is_anima or t.is_krea:
+            return f"{t.model_version} can only be trained from inside Forge Neo"
 
         vae = None
         vae_path = None if vaename in ["", "None"] else vaename
@@ -176,21 +178,28 @@ def train_main(jsononly_or_paths, mode, modelname, vaename, tename, *args):
         te_path = trainer.te_list[tename] if tename != "None" else None
         t.sd_typer()
 
-    if getattr(t, "is_anima", False) or getattr(t, "is_krea", False):
-        return f"{t.model_version} cannot be trained yet: TrainTrain builds its own diffusers model and there is no diffusers implementation of this transformer here. Detection and the latent normalisation are in place."
-
         checkpoint_filename = shared.sd_model.sd_checkpoint_info.filename
 
         t.orig_cond, t.orig_vector  = text2cond(t, t.prompts[0])
         t.targ_cond, t.targ_vector  = text2cond(t, t.prompts[1])
         t.un_cond, t.un_vector = text2cond(t, t.prompts[2])
 
+        if t.is_anima or t.is_krea:
+            # take the transformer and the VAE out of the running model while it
+            # is still there, the text encoder is not needed past this point
+            neo_model = trainer.load_checkpoint_model_neo(t)
+
         print("Preparing the Model...")
 
         if forge:
             sd_models.model_data.sd_model = None
             sd_models.model_data.loaded_sd_models = []
-            free_memory(0,CUDA, free_all = True)
+            # free_all was dropped from Forge's signature, an enormous request
+            # unloads everything just as well
+            try:
+                free_memory(0, CUDA, free_all = True)
+            except TypeError:
+                free_memory(float("inf"), CUDA)
             gc.collect()
         else:
             sd_models.unload_model_weights()
@@ -202,7 +211,9 @@ def train_main(jsononly_or_paths, mode, modelname, vaename, tename, *args):
     if not vae:
         vae = trainer.load_VAE(t, vae_path) if vae_path is not None else None
 
-    if t.is_sdxl: 
+    if neo_model is not None:
+        text_model, unet, vae = neo_model
+    elif t.is_sdxl: 
         text_model, unet, vae = trainer.load_checkpoint_model_xl(checkpoint_filename, t, vae = vae)
     elif t.is_zimage:
         text_model, unet, vae = trainer.load_checkpoint_model_zimage(checkpoint_filename, t, vae_path = vae,te_path = te_path)
@@ -225,7 +236,7 @@ def train_main(jsononly_or_paths, mode, modelname, vaename, tename, *args):
     if t.use_gradient_checkpointing:
         unet.train()
         unet.enable_gradient_checkpointing()
-        if not t.is_zimage:
+        if not t.is_flow:
             text_model.train()
             text_model.gradient_checkpointing_enable()
 
@@ -334,8 +345,8 @@ def train_lora(t):
                 noise = torch.randn_like(latents)
                 batch_size = latents.shape[0]
 
-                if t.is_zimage:
-                    timesteps, noisy_latents, target = apply_flow_matching_noise(latents, noise, 3.0)
+                if t.is_flow:
+                    timesteps, noisy_latents, target = apply_flow_matching_noise(latents, noise, t.flow_shift)
                 else:
                     timesteps = torch.randint(t.train_min_timesteps, t.train_max_timesteps, ((1 if t.train_fixed_timsteps_in_batch else batch_size),), device=CUDA) 
                     timesteps = torch.cat([timesteps.long()] * (batch_size if t.train_fixed_timsteps_in_batch else 1))
@@ -413,7 +424,7 @@ def train_leco(t):
 
     height, width = t.image_size
 
-    latents = torch.randn((t.train_batch_size, 16 if t.is_zimage else 4, height // 8, width // 8), device=CUDA,dtype = t.train_model_precision)
+    latents = torch.randn((t.train_batch_size, 16 if t.is_flow else 4, height // 8, width // 8), device=CUDA,dtype = t.train_model_precision)
     if t.is_zimage:
         latents = latents.unsqueeze(2)
         latents = list(latents.unbind(0))
@@ -426,8 +437,8 @@ def train_leco(t):
     pbar = tqdm(range(t.train_iterations))
     while t.train_iterations >= pbar.n:
         with torch.no_grad(), t.a.autocast():       
-            if t.is_zimage:
-                timesteps, noisy_latents, target = apply_flow_matching_noise(latents, None, 3.0)         
+            if t.is_flow:
+                timesteps, noisy_latents, target = apply_flow_matching_noise(latents, None, t.flow_shift)         
             else:
                 timesteps = torch.randint(t.train_min_timesteps, t.train_max_timesteps, (t.train_batch_size,),device=CUDA)
                 timesteps = timesteps.long()
@@ -531,8 +542,8 @@ def make_diff_lora(t, copy):
     while t.train_iterations >= pbar.n:
         optimizer.zero_grad()
         noise = torch.randn_like(image_latent)
-        if t.is_zimage:
-            timesteps, noisy_latents, target = apply_flow_matching_noise(image_latent, noise, 3.0)         
+        if t.is_flow:
+            timesteps, noisy_latents, target = apply_flow_matching_noise(image_latent, noise, t.flow_shift)         
         else:
             timesteps = torch.randint(t.train_min_timesteps, t.train_max_timesteps, ((1 if t.train_fixed_timsteps_in_batch else batch_size),),device=CUDA) 
             timesteps = torch.cat([timesteps.long()] * (batch_size if t.train_fixed_timsteps_in_batch else 1))
@@ -547,7 +558,7 @@ def make_diff_lora(t, copy):
             else:
                 noise_pred = t.unet(noisy_latents, timesteps, torch.cat([t.orig_cond] * batch_size), added_cond_kwargs = added_cond_kwargs).sample
 
-        if not t.is_zimage:
+        if not t.is_flow:
             target = noise
         if t.model_v_pred:
             target = t.noise_scheduler.get_velocity(image_latent, noise, timesteps)
@@ -654,9 +665,9 @@ def train_diff2(t):
             if 0 > t.diff_alt_ratio and not turn:
                 targ_latent = orig_latent = noise
 
-            if t.is_zimage:
-                timesteps_z, orig_noisy_latents, target = apply_flow_matching_noise(orig_latent if turn else targ_latent, noise, 3.0, timesteps = timesteps)    
-                timesteps_z, targ_noisy_latents, target = apply_flow_matching_noise(targ_latent if turn else orig_latent, noise, 3.0, timesteps = timesteps)        
+            if t.is_flow:
+                timesteps_z, orig_noisy_latents, target = apply_flow_matching_noise(orig_latent if turn else targ_latent, noise, t.flow_shift, timesteps = timesteps)    
+                timesteps_z, targ_noisy_latents, target = apply_flow_matching_noise(targ_latent if turn else orig_latent, noise, t.flow_shift, timesteps = timesteps)        
             else:
                 orig_noisy_latents = t.noise_scheduler.add_noise(orig_latent if turn else targ_latent, noise, timesteps)
                 targ_noisy_latents = t.noise_scheduler.add_noise(targ_latent if turn else orig_latent, noise, timesteps)
@@ -801,7 +812,7 @@ def process_loss(t, original, target, timesteps, loss_ema, loss_velocity, copy =
     
     loss = loss.mean([1, 2, 3])
 
-    if t.train_snr_gamma > 0 and not t.is_zimage:
+    if t.train_snr_gamma > 0 and not t.is_flow:
         loss = apply_snr_weight(loss, timesteps, t.noise_scheduler, t.train_snr_gamma)
 
     loss = loss.mean()
@@ -857,6 +868,9 @@ def text2cond(t, prompt):
         if t.is_sdxl:
             return [cond[0][0].cond["crossattn"].unsqueeze(0).to(CUDA, dtype=t.train_model_precision),
                     (cond[0][0].cond["vector"][:1280].unsqueeze(0).to(CUDA, dtype=t.train_model_precision))]
+        elif t.is_anima:
+            # Anima's engine hands back (1, 512, 1024), it is batched already
+            return cond[0][0].cond.to(CUDA, dtype=t.train_model_precision), None
         else:
             return (cond[0][0].cond.unsqueeze(0).to(CUDA, dtype=t.train_model_precision)), None
 

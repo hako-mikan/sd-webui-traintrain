@@ -348,7 +348,9 @@ def encode_image_text(t):
                 else:
                     prompt = t.lora_trigger_word
                 t.tagcount(prompt)
-                if "BASE" not in t.network_blocks:
+                # the Forge Neo models cannot train their text encoder, and it is
+                # shuffled off the card once training starts, so encode up front
+                if "BASE" not in t.network_blocks or t.is_anima or t.is_krea:
                     emb1, emb2 = (emp1, emp2) if prompt is None else t.text_model.encode_text(prompt)
                 else:
                     emb1 = emb2 = prompt

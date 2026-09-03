@@ -65,7 +65,8 @@ LORA_PREFIX_TEXT_ENCODER2 = "lora_te2"
 LORA_LINEAR = ["Linear", "LoRACompatibleLinear"]
 LORA_CONV = ["Conv2d", "LoRACompatibleConv"]
 
-MMDIT_TARGET_REPLACE_MODULE = ["ZImageTransformerBlock", "JointTransformerBlock", "FluxTransformerBlock", "FluxSingleTransformerBlock", "AuraFlowJointTransformerBlock", "AuraFlowSingleTransformerBlock", "JointTransformerBlock"]
+MMDIT_TARGET_REPLACE_MODULE = ["ZImageTransformerBlock", "JointTransformerBlock", "FluxTransformerBlock", "FluxSingleTransformerBlock", "AuraFlowJointTransformerBlock", "AuraFlowSingleTransformerBlock", "JointTransformerBlock",
+                               "Block", "SingleStreamBlock", "TextFusionBlock"]  # Forge Neo: Anima, Krea2
 LORA_PREFIX_MMDIT = 'diffusion_model'
 
 PREFIXLIST = [
@@ -182,7 +183,7 @@ class LoRANetwork(nn.Module):
 
         self.unet_loras = self.load_fromfile(t, 4 if t.is_dit else 0) if t.network_resume else self.create_modules(t, 4 if t.is_dit else 0)
         
-        if "BASE" in t.network_blocks:# and t.mode == "LoRA":
+        if "BASE" in t.network_blocks and not (t.is_anima or t.is_krea):# and t.mode == "LoRA":
             self.te_loras = self.load_fromfile(t, 2 if t.is_te2 else 1) if t.network_resume else self.create_modules(t, 2 if t.is_te2 else 1)
             if t.is_te2:
                 self.te_loras += self.load_fromfile(t, 3) if t.network_resume else self.create_modules(t, 3)
@@ -224,7 +225,7 @@ class LoRANetwork(nn.Module):
         for name, module in root_modules:
             #print(name, module.__class__.__name__)
             if module.__class__.__name__ in target:
-                if "layers" not in name and ut == 4:
+                if ut == 4 and not any(part in name for part in ("layers", "blocks")):
                     continue
                 for child_name, child_module in module.named_modules():
                     is_linear = child_module.__class__.__name__ in LORA_LINEAR
@@ -350,7 +351,7 @@ class LoRANetwork(nn.Module):
                 state_dict[key] = v
 
         for key in list(state_dict.keys()):
-            if not key.startswith("lora") and not t.is_zimage:
+            if not key.startswith("lora") and not t.is_flow:
                 del state_dict[key]
 
         if t.network_strength != 1:
@@ -363,6 +364,17 @@ class LoRANetwork(nn.Module):
             for key in list(state_dict.keys()):
                 outdict[self.fix_keys_zimage(key)] = state_dict[key]
             state_dict = outdict
+        elif t.is_anima or t.is_krea:
+            # these are Forge Neo's own modules, so the flattened path already
+            # matches the checkpoint. Neo reads that as lora_unet_<path>. The
+            # model_ in between is the wrapper that adapts Neo's forward.
+            def rename(key):
+                for prefix in ("diffusion_model_model_", "diffusion_model_"):
+                    if key.startswith(prefix):
+                        return "lora_unet_" + key[len(prefix):]
+                return key
+
+            state_dict = {rename(key): value for key, value in state_dict.items()}
             
         base, ext = os.path.splitext(file)
         attempt = 0

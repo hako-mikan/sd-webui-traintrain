@@ -363,6 +363,10 @@ class Trainer():
         self.is_dit = self.is_sd3 or self.is_flux or self.is_zimage or self.is_anima or self.is_krea
         self.is_te2 = self.is_sdxl or self.is_sd3
 
+        # these are trained by flow matching rather than with the DDPM scheduler
+        self.is_flow = self.is_zimage or self.is_anima or self.is_krea
+        self.flow_shift = 1.15 if self.is_krea else 3.0
+
         print("Base Model : ", self.model_version)
     
     def setpaths(self, paths):
@@ -922,6 +926,267 @@ def remap_zimage_transformer_state_dict(sd: dict) -> dict:
         new_sd[new_k] = v
 
     return new_sd
+
+
+#### Forge Neo native models ####################################################
+# Anima and Krea2 only exist inside Forge Neo. Rather than carry a second
+# implementation of each transformer here, and keep it in step with Neo forever,
+# train the model Neo has already built and only adapt it to the interface the
+# training loop expects.
+
+def unlock_inference_tensors(module):
+    """Neo builds its models inside torch.inference_mode(). An inference tensor
+    can never take part in autograd, not even as a frozen operand, so the base
+    weights have to be cloned out of that mode before a LoRA can be trained on
+    top of them."""
+    freed = 0
+    with torch.no_grad():
+        for m in module.modules():
+            for name, p in list(m._parameters.items()):
+                if p is None or not p.is_inference():
+                    continue
+                m._parameters[name] = nn.Parameter(p.clone(), requires_grad=False)
+                freed += 1
+            for name, b in list(m._buffers.items()):
+                if b is None or not torch.is_tensor(b) or not b.is_inference():
+                    continue
+                m._buffers[name] = b.clone()
+                freed += 1
+    print(f"[Forge Neo] {freed} tensors taken out of inference mode")
+    return module
+
+
+# Neo runs these models under inference mode, where three things are perfectly
+# reasonable that a backward pass cannot survive: the residual stream is updated
+# in place, rope comes from a fused kernel, and attention may be dispatched to a
+# backend written for the forward direction only. The replacements below keep the
+# arithmetic identical and are bound to the training copy alone.
+
+def _eager_rope():
+    from comfy_kitchen.backends.eager import rope
+    return rope
+
+
+def _pytorch_attention():
+    from backend.attention import attention_pytorch
+    return attention_pytorch
+
+
+def _anima_attention_forward(self, x, context = None, rope_emb = None, transformer_options = {}):
+    from einops import rearrange
+
+    q = self.q_proj(x)
+    k = self.k_proj(x if context is None else context)
+    v = self.v_proj(x if context is None else context)
+    q, k, v = (rearrange(t, "b ... (h d) -> b ... h d", h = self.n_heads, d = self.head_dim) for t in (q, k, v))
+
+    if self.is_SelfAttn and rope_emb is not None:
+        q, k = _eager_rope().rms_rope_split_half(
+            q, k, rope_emb,
+            self.q_norm.weight.to(q.dtype), self.k_norm.weight.to(k.dtype),
+            self.q_norm.eps,
+        )
+    else:
+        q, k = self.q_norm(q), self.k_norm(k)
+    v = self.v_norm(v)
+
+    q_shape, k_shape = q.shape, k.shape
+    q = rearrange(q, "b ... h k -> b h ... k").view(q_shape[0], q_shape[-2], -1, q_shape[-1])
+    k = rearrange(k, "b ... h v -> b h ... v").view(k_shape[0], k_shape[-2], -1, k_shape[-1])
+    v = rearrange(v, "b ... h v -> b h ... v").view(k_shape[0], k_shape[-2], -1, k_shape[-1])
+
+    result = _pytorch_attention()(q, k, v, q_shape[-2], skip_reshape = True, transformer_options = transformer_options)
+    return self.output_dropout(self.output_proj(result))
+
+
+def _krea_attention_forward(self, x, freqs = None, mask = None, transformer_options = {}):
+    from einops import rearrange
+
+    q, k, v, gate = self.wq(x), self.wk(x), self.wv(x), self.gate(x)
+    q = rearrange(q, "B L (H D) -> B H L D", H = self.heads)
+    k = rearrange(k, "B L (H D) -> B H L D", H = self.kvheads)
+    v = rearrange(v, "B L (H D) -> B H L D", H = self.kvheads)
+    q, k = self.qknorm(q, k)
+
+    if freqs is not None:
+        q, k = _eager_rope().apply_rope(q, k, freqs)
+    if self.kvheads != self.heads:
+        rep = self.heads // self.kvheads
+        k = k.repeat_interleave(rep, dim = 1)
+        v = v.repeat_interleave(rep, dim = 1)
+
+    out = _pytorch_attention()(q, k, v, self.heads, mask = mask, skip_reshape = True, transformer_options = transformer_options)
+    return self.wo(out * torch.sigmoid(gate))
+
+
+def _krea_swiglu_forward(self, x):
+    return self.down(torch.nn.functional.silu(self.gate(x)) * self.up(x))
+
+
+def _krea_text_fusion_block_forward(self, x, mask = None, transformer_options = {}):
+    x = x + self.attn(self.prenorm(x), mask = mask, transformer_options = transformer_options)
+    return x + self.mlp(self.postnorm(x))
+
+
+def _krea_single_stream_forward(self, x, vec, freqs, mask = None, transformer_options = {}):
+    prescale, preshift, pregate, postscale, postshift, postgate = self.mod(vec)
+    x = torch.addcmul(x, pregate, self.attn(torch.addcmul(preshift, 1 + prescale, self.prenorm(x)), freqs, mask, transformer_options = transformer_options))
+    return torch.addcmul(x, postgate, self.mlp(torch.addcmul(postshift, 1 + postscale, self.postnorm(x))))
+
+
+BACKWARD_SAFE_FORWARDS = {
+    "SelfCrossAttention": _anima_attention_forward,   # Anima
+    "Attention": _krea_attention_forward,             # Krea2
+    "SwiGLU": _krea_swiglu_forward,
+    "TextFusionBlock": _krea_text_fusion_block_forward,
+    "SingleStreamBlock": _krea_single_stream_forward,
+}
+
+
+def make_backward_safe(module):
+    import types
+
+    patched = 0
+    for m in module.modules():
+        replacement = BACKWARD_SAFE_FORWARDS.get(type(m).__name__)
+        if replacement is not None:
+            m.forward = types.MethodType(replacement, m)
+            patched += 1
+    print(f"[Forge Neo] {patched} modules rebound for the backward pass")
+    return module
+
+
+class NeoPrompts(list):
+    """What the Forge Neo engines expect to be handed instead of a plain list."""
+
+    def __init__(self, prompts, width = None, height = None):
+        super().__init__()
+        self.extend(prompts)
+        self.is_negative_prompt = False
+        self.width = width
+        self.height = height
+
+
+class NeoTextModel(nn.Module):
+    """TrainTrain builds its own text encoder, but for these models the prompt
+    goes through the engine that is already running, which owns the tokenizer,
+    the LLM and, on Anima, the adapter that follows it."""
+
+    def __init__(self, engine, is_anima):
+        super().__init__()
+        self.__dict__["engine"] = engine
+        self.is_anima = is_anima
+        self.text_encoders = [None, None, None]
+        self.tokenizers = [None, None, None]
+
+    def encode_text(self, prompts):
+        if isinstance(prompts, str):
+            prompts = [prompts]
+        cond = self.engine.get_learned_conditioning(NeoPrompts(list(prompts)))
+        if isinstance(cond, list):
+            # Anima hands back one batched (1, 512, 1024) per prompt, Krea2 an
+            # unbatched (tokens, 12, 2560)
+            cond = torch.cat(cond, dim = 0) if self.is_anima else torch.stack(cond, dim = 0)
+        return cond, None
+
+    def gradient_checkpointing_enable(self):
+        pass
+
+
+class NeoDiTOutput():
+    def __init__(self, sample):
+        self.sample = sample
+
+
+class NeoDiT(nn.Module):
+    """Speaks the dialect the training loop uses with the diffusers models: a
+    four dimensional latent, a timestep in 0-1000, and the result on .sample.
+    Neo's models want a five dimensional Wan latent and a sigma in 0-1."""
+
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def forward(self, latents, timesteps, cond, added_cond_kwargs = None, **kwargs):
+        if latents.dim() == 4:
+            latents = latents.unsqueeze(2)
+        dtype = getattr(self.model, "computation_dtype", latents.dtype)
+        latents = latents.to(dtype)
+        cond = cond.to(device = latents.device, dtype = dtype)
+        sigmas = timesteps.to(device = latents.device).float() / 1000.0
+        out = self.model(latents, sigmas, cond)
+        if out.dim() == 5:
+            out = out.squeeze(2)
+        return NeoDiTOutput(out)
+
+    def to(self, *args, **kwargs):
+        # Only ever move it. Neo picks the storage dtype when it loads the file,
+        # and an fp8 checkpoint is only small because the weights stay fp8 while
+        # the layers cast as they go.
+        device = kwargs.get("device", None)
+        for arg in args:
+            if isinstance(arg, (str, torch.device)):
+                device = arg
+        if device is not None:
+            self.model.to(device = device)
+        return self
+
+    def enable_gradient_checkpointing(self):
+        print("TrainTrain: gradient checkpointing is not available for the Forge Neo models")
+
+    def enable_xformers_memory_efficient_attention(self):
+        raise NotImplementedError("Forge Neo picks its own attention backend")
+
+
+class NeoVAE(nn.Module):
+    """image2latent talks to a diffusers autoencoder, so let Neo's answer the
+    same way. The latent comes back unnormalised, image2latent applies the per
+    channel mean and standard deviation of the Wan autoencoder."""
+
+    def __init__(self, vae):
+        super().__init__()
+        self.vae = vae
+
+    def to(self, *args, **kwargs):
+        return self
+
+    def encode(self, image):
+        latents = []
+        # the Wan autoencoder's weights are inference tensors and its causal
+        # padding indexes them, which only works inside inference mode
+        with torch.inference_mode():
+            for i in range(image.shape[0]):
+                # the same preparation Neo's encode_first_stage does for a Wan VAE
+                pixels = image[i : i + 1].movedim(1, -1).mul(0.5).add(0.5)
+                latents.append(self.vae.encode(pixels))
+            latent = torch.cat(latents, dim = 0)
+        return latent.clone()
+
+
+def load_checkpoint_model_neo(t):
+    if standalone:
+        raise RuntimeError("TrainTrain: Anima and Krea2 can only be trained from inside Forge Neo")
+
+    engine = shared.sd_model
+    transformer = engine.forge_objects.unet.model.diffusion_model
+    name = type(transformer).__name__
+
+    if name not in ("Anima", "SingleStreamDiT"):
+        raise RuntimeError(f"TrainTrain: expected the Anima or Krea2 transformer, Forge Neo loaded {name}")
+
+    vae = NeoVAE(engine.forge_objects.vae)
+
+    transformer.to(device = CPU)
+    unlock_inference_tensors(transformer)
+    make_backward_safe(transformer)
+
+    dtype = getattr(transformer, "computation_dtype", None)
+    if dtype is not None:
+        t.train_model_precision = dtype
+        print(f"[Forge Neo] {name}: storage {getattr(transformer, 'storage_dtype', dtype)}, computation {dtype}")
+
+    text_model = NeoTextModel(engine, name == "Anima")
+    return text_model, NeoDiT(transformer), vae
 
 
 class TextModel(nn.Module):
