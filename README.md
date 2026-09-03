@@ -7,6 +7,8 @@
 [<img src="https://img.shields.io/badge/Support-%E2%99%A5-magenta.svg?logo=github&style=plastic" height="25" />](https://github.com/sponsors/hako-mikan)
 
 # Recent Update
+2026.09.04 Support Anima and Krea2 on Forge Neo
+
 2025.12.09 Support Z-Image Turbo
 
 Standalone training is now supported. For details, please refer to the [Standalone Environment Setup Repository](https://github.com/hako-mikan/traintrain-standalone).
@@ -37,6 +39,23 @@ This is a tool for training LoRA for Stable Diffusion. It operates as an extensi
 
 ## Requirements
    Operates with Web-UI 1.10, latest version of Forge/reForge.
+
+### Supported models
+|Model|Where|Notes|
+|-|-|-|
+|SD1.5 / SD2 / SDXL|Web-UI, Forge, reForge, Forge Neo, standalone||
+|SD3 / Flux|Forge, Forge Neo, standalone||
+|Z-Image|Forge Neo, standalone|needs a diffusers with `attention_dispatch`, which Forge Neo ships|
+|Anima|Forge Neo|checked on 2B; 2.9B and 3.8B take the same path|
+|Krea2|Forge Neo|slow: these checkpoints arrive quantized and the weights are unpacked as they are used|
+
+   Anima and Krea2 exist only inside Forge Neo, so TrainTrain trains the model
+Forge Neo has already loaded rather than building its own. Two consequences: the
+text encoder cannot be trained for them, so `BASE` in `network blocks` has no
+effect, and the checkpoint has to be selected in the Forge Neo preset for its
+architecture before training, so that the VAE and the text encoder come along
+with it. Leave `use gradient checkpointing` on: without it a 1024px Anima run
+does not fit in 16GB.
 
 ## Installation
    Enter `https://github.com/hako-mikan/sd-webui-traintrain` in the Web-UI's Install From URL and press the Install button, then restart. The first startup may take a little time (a few seconds to tens of seconds).

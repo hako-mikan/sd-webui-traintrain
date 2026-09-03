@@ -10,6 +10,8 @@
 Stable DiffusionのLoRAを学習するツールです。Stable Diffusion Web-UIの拡張として動作し、学習用の環境構築を必要としません。通常のLoRA及び、モデルの概念を除去・強調するLECOの学習を高速化したiLECO(instant-LECO)と、ふたつの差分画像からスライダーLoRAなどを作成する差分学習を行えます。
 
 # Recent Update
+2026.09.04 Forge NeoのAnimaとKrea2に対応しました。
+
 スタンドアロン環境で学習できるようになりました。詳細は[スタンドアロン環境構築レポジトリ](https://github.com/hako-mikan/traintrain-standalone)を参照してください。
 
 2025.03.04
@@ -32,6 +34,17 @@ Stable DiffusionのLoRAを学習するツールです。Stable Diffusion Web-UI�
 
 ## 使用要件
 　Web-UI 1.10以上、最新版のForge/reForgeで動作します。
+
+### 対応モデル
+|モデル|動作環境|備考|
+|-|-|-|
+|SD1.5 / SD2 / SDXL|Web-UI, Forge, reForge, Forge Neo, スタンドアロン||
+|SD3 / Flux|Forge, Forge Neo, スタンドアロン||
+|Z-Image|Forge Neo, スタンドアロン|`attention_dispatch`を持つdiffusersが必要です。Forge Neoには同梱されています|
+|Anima|Forge Neo|2Bで確認しています。2.9B, 3.8Bも同じ経路を通ります|
+|Krea2|Forge Neo|低速です。これらのcheckpointは量子化されており、重みを都度展開しながら学習します|
+
+　AnimaとKrea2はForge Neoにしか実装がないため、TrainTrainは独自にモデルを構築せず、Forge Neoが読み込んだモデルをそのまま学習します。このため2点の制限があります。text encoderは学習できないので`network blocks`の`BASE`は効果がありません。また、VAEとtext encoderを一緒に読み込ませるため、学習前にForge Neo側でそのアーキテクチャのpresetを選択してcheckpointを読み込んでおく必要があります。`use gradient checkpointing`は有効にしておいてください。無効の場合、1024pxのAnimaの学習は16GBに収まりません。
 
 ## インストール
 　Web-UIのInstall From URLに`https://github.com/hako-mikan/sd-webui-traintrain`と入力しInstallボタンを押します。少し(数秒～数十秒)時間が掛かります。
