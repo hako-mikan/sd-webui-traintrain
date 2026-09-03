@@ -1034,6 +1034,23 @@ def _krea_single_stream_forward(self, x, vec, freqs, mask = None, transformer_op
     return torch.addcmul(x, postgate, self.mlp(torch.addcmul(postshift, 1 + postscale, self.postnorm(x))))
 
 
+def _mixed_precision_linear_forward(self, input, *args, **kwargs):
+    """Neo's mixed precision Linear multiplies in the quantized format and
+    asserts the input carries no gradient. Unpack the weight and multiply in the
+    input's own dtype instead: the weight is frozen either way, only the input
+    needs a gradient."""
+    weight = self.weight
+    if hasattr(weight, "dequantize"):
+        weight = weight.dequantize()
+    weight = weight.to(device = input.device, dtype = input.dtype)
+
+    bias = self.bias
+    if bias is not None:
+        bias = bias.to(device = input.device, dtype = input.dtype)
+
+    return torch.nn.functional.linear(input, weight, bias)
+
+
 BACKWARD_SAFE_FORWARDS = {
     "SelfCrossAttention": _anima_attention_forward,   # Anima
     "Attention": _krea_attention_forward,             # Krea2
@@ -1046,13 +1063,19 @@ BACKWARD_SAFE_FORWARDS = {
 def make_backward_safe(module):
     import types
 
-    patched = 0
+    patched = quantized = 0
     for m in module.modules():
         replacement = BACKWARD_SAFE_FORWARDS.get(type(m).__name__)
         if replacement is not None:
             m.forward = types.MethodType(replacement, m)
             patched += 1
+        elif hasattr(m, "_full_precision_mm"):
+            m._full_precision_mm = True
+            m.forward = types.MethodType(_mixed_precision_linear_forward, m)
+            quantized += 1
     print(f"[Forge Neo] {patched} modules rebound for the backward pass")
+    if quantized:
+        print(f"[Forge Neo] {quantized} quantized layers unpacked as they are used")
     return module
 
 
@@ -1111,9 +1134,10 @@ class NeoDiT(nn.Module):
         if latents.dim() == 4:
             latents = latents.unsqueeze(2)
         dtype = getattr(self.model, "computation_dtype", latents.dtype)
-        latents = latents.to(dtype)
-        cond = cond.to(device = latents.device, dtype = dtype)
-        sigmas = timesteps.to(device = latents.device).float() / 1000.0
+        device = next(self.model.parameters()).device
+        latents = latents.to(device = device, dtype = dtype)
+        cond = cond.to(device = device, dtype = dtype)
+        sigmas = timesteps.to(device = device).float() / 1000.0
         out = self.model(latents, sigmas, cond)
         if out.dim() == 5:
             out = out.squeeze(2)
@@ -1160,7 +1184,8 @@ class NeoVAE(nn.Module):
                 pixels = image[i : i + 1].movedim(1, -1).mul(0.5).add(0.5)
                 latents.append(self.vae.encode(pixels))
             latent = torch.cat(latents, dim = 0)
-        return latent.clone()
+        # Neo hands the latent back on its output device, which is the CPU
+        return latent.clone().to(image.device)
 
 
 def load_checkpoint_model_neo(t):
