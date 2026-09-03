@@ -1156,7 +1156,24 @@ class NeoDiT(nn.Module):
         return self
 
     def enable_gradient_checkpointing(self):
-        print("TrainTrain: gradient checkpointing is not available for the Forge Neo models")
+        # without this a 1024px Anima run needs more than 16GB: nothing in Neo's
+        # models is written for training, so every block keeps its activations
+        import functools
+        import torch.utils.checkpoint as checkpoint
+
+        wrapped = 0
+        for name, block in self.model.named_modules():
+            if type(block).__name__ not in ("Block", "SingleStreamBlock", "TextFusionBlock"):
+                continue
+
+            @functools.wraps(block.forward)
+            def forward(*args, _inner = block.forward, **kwargs):
+                return checkpoint.checkpoint(_inner, *args, use_reentrant = False, **kwargs)
+
+            block.forward = forward
+            wrapped += 1
+
+        print(f"[Forge Neo] gradient checkpointing on {wrapped} blocks")
 
     def enable_xformers_memory_efficient_attention(self):
         raise NotImplementedError("Forge Neo picks its own attention backend")
