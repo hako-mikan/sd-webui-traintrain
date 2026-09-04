@@ -1291,7 +1291,10 @@ class TextModel(nn.Module):
         # calculate pooled_output
         eos_token_index = torch.where(tokens[1] == self.tokenizers[1].eos_token_id)[1].to(device=last_hidden_state.device)
         pooled_output = last_hidden_state[torch.arange(last_hidden_state.shape[0], device=last_hidden_state.device),eos_token_index]
-        pooled_output = self.text_encoders[1].text_projection(pooled_output)
+        # the encoder runs under accelerate's autocast and hands back fp32, while
+        # the projection is called straight from here and keeps the model's dtype
+        projection = self.text_encoders[1].text_projection
+        pooled_output = projection(pooled_output.to(projection.weight.dtype))
 
         encoder_hidden_states_2 = encoder_output_2.hidden_states[skip]
 
@@ -1306,7 +1309,8 @@ class TextModel(nn.Module):
         # calculate pooled_output
         eos_token_index = torch.where(tokens[0] == self.tokenizers[0].eos_token_id)[1][0].to(device=last_hidden_state.device)
         pooled_output = last_hidden_state[torch.arange(last_hidden_state.shape[0], device=last_hidden_state.device), eos_token_index]
-        pooled_output = self.text_encoders[0].text_projection(pooled_output)
+        projection = self.text_encoders[0].text_projection
+        pooled_output = projection(pooled_output.to(projection.weight.dtype))
 
         encoder_hidden_states = encoder_output.hidden_states[self.clip_skip]
 
@@ -1315,7 +1319,8 @@ class TextModel(nn.Module):
         # calculate pooled_output
         eos_token_index = torch.where(tokens[1] == self.tokenizers[1].eos_token_id)[1].to(device=last_hidden_state.device)
         pooled_output_2 = last_hidden_state[torch.arange(last_hidden_state.shape[0], device=last_hidden_state.device),eos_token_index]
-        pooled_output_2 = self.text_encoders[1].text_projection(pooled_output_2)
+        projection = self.text_encoders[1].text_projection
+        pooled_output_2 = projection(pooled_output_2.to(projection.weight.dtype))
 
         encoder_hidden_states_2 = encoder_output_2.hidden_states[self.clip_skip]
 
@@ -1641,26 +1646,39 @@ def load_VAE(t, path):
 #### TextEncoders ################################################
 te_list = {}
 
+
+def find_files_with_extensions(base_path, extensions):
+    found_files = {}
+    for root, _, files in os.walk(base_path):
+        for file in files:
+            if any(file.endswith(ext) for ext in extensions):
+                full_path = os.path.join(root, file)
+                found_files[file] = full_path
+    return found_files
+
+
 try:
-    te_paths: set[str] = {
-        os.path.abspath(os.path.join(paths.models_path, "text_encoder")),
-        *shared.cmd_opts.text_encoder_dirs,
-    }
+    if standalone:
+        # there is no webui to ask, so go by the directories the command line
+        # named. This used to raise on the missing paths module and leave the
+        # text encoder list empty, which is the one thing Z-Image cannot do without
+        te_dirs = set()
+        if getattr(args, "te_dir", None):
+            te_dirs.add(args.te_dir)
+        if getattr(args, "models_dir", None):
+            te_dirs.add(os.path.join(args.models_dir, "TextEncoders"))
+        te_dirs.add(os.path.join(path_root, "TextEncoders"))
+    else:
+        te_dirs = {
+            os.path.abspath(os.path.join(paths.models_path, "text_encoder")),
+            *shared.cmd_opts.text_encoder_dirs,
+        }
 
-    def find_files_with_extensions(base_path, extensions):
-        found_files = {}
-        for root, _, files in os.walk(base_path):
-            for file in files:
-                if any(file.endswith(ext) for ext in extensions):
-                    full_path = os.path.join(root, file)
-                    found_files[file] = full_path
-        return found_files
-
-    for te_paths in te_paths:
-        te_paths = find_files_with_extensions(te_paths, EXTENTIONS)
-        te_list.update(te_paths)
-except Exception as e: 
-    print(e)
+    for te_dir in te_dirs:
+        if os.path.isdir(te_dir):
+            te_list.update(find_files_with_extensions(te_dir, EXTENTIONS))
+except Exception as e:
+    print("TrainTrain: could not list the text encoders:", e)
     
 def read_arbitrary_config(name):
     config_path = os.path.join(path_root, f"{name}.json")
