@@ -22,6 +22,7 @@ if standalone:
     from modules.launch_utils import args
 else:
     from trainer import train, trainer, gen
+    args = None  # only the standalone build has command line arguments
 
 jsonspath = trainer.jsonspath
 logspath = trainer.logspath
@@ -460,8 +461,8 @@ def on_ui_tabs():
         def openfolder_f():
             os.startfile(jsonspath)
 
-        loadjson.click(trainer.import_json,[sets_file], [mode, model, vae] +  train_settings_1 +  train_settings_2 + prompts)
-        loadpreset.click(load_preset,[presets], [mode, model, vae] +  train_settings_1 +  train_settings_2 + prompts)
+        loadjson.click(trainer.import_json,[sets_file], [mode, model, vae, te] +  train_settings_1 +  train_settings_2 + prompts)
+        loadpreset.click(load_preset,[presets], [mode, model, vae, te] +  train_settings_1 +  train_settings_2 + prompts)
         mode.change(change_the_mode,[mode],[*train_settings_1, diff_2nd, g_leco ,g_diff])
         openfolder.click(openfolder_f)
         copy.click(lambda *x: x, train_settings_1[1:], train_settings_2[1:])
@@ -482,8 +483,26 @@ def wait_on_server():
 def launch():
     block, _, _ = on_ui_tabs()[0]
 
+    options = {}
+
+    # the standalone build takes these from the command line, the same names the
+    # web-ui uses. Without them the UI only ever answered on localhost.
+    if getattr(args, "listen", False):
+        options["server_name"] = "0.0.0.0"
+    if getattr(args, "server_name", None):
+        options["server_name"] = args.server_name
+    if getattr(args, "port", None):
+        options["server_port"] = args.port
+    if getattr(args, "share", False):
+        options["share"] = True
+    if getattr(args, "inbrowser", False):
+        options["inbrowser"] = True
+    if getattr(args, "gradio_auth", None):
+        options["auth"] = [tuple(pair.split(":", 1)) for pair in args.gradio_auth.split(",") if ":" in pair]
+
     block.launch(
         prevent_thread_lock=True,
+        **options,
     )
 
     wait_on_server()

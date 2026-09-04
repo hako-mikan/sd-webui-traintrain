@@ -400,7 +400,8 @@ def import_json(name, preset = False, cli = False):
     output = []
 
     if filepath is None:
-        return [gr.update()] * len(all_configs)
+        # mode, model, vae, te + both passes of settings + the three prompts
+        return [gr.update()] * (4 + len(all_configs) * 2 + 3)
     with open(filepath, 'r', encoding='utf-8') as file:
         data = json.load(file)
     
@@ -438,6 +439,9 @@ def import_json(name, preset = False, cli = False):
     head.append(data["mode"] if "mode" in data else "LoRA")
     head.append(data["model"] if "model" in data else None)
     head.append(data["vae"] if "vae" in data else None)
+    # train_main takes the text encoder between the VAE and the settings, so
+    # leaving it out shifted every setting by one on the command line
+    head.append(data["te"] if "te" in data else None)
 
     return head + output
 
