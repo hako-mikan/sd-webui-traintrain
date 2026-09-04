@@ -1275,7 +1275,12 @@ class TextModel(nn.Module):
         return encoder_hidden_states, None
     
     def encode_sdxl(self, tokens):
-        encoder_hidden_states = self.text_encoders[0](tokens[0], output_hidden_states=True).hidden_states[self.clip_skip]
+        # SDXL takes the penultimate hidden state from both encoders, the way the
+        # web-ui and diffusers do. The last one is not merely a different layer:
+        # OpenCLIP's final block overflows fp16 and the conditioning comes out NaN.
+        skip = self.clip_skip if self.clip_skip <= -2 else -2
+
+        encoder_hidden_states = self.text_encoders[0](tokens[0], output_hidden_states=True).hidden_states[skip]
         encoder_output_2 = self.text_encoders[1](tokens[1], output_hidden_states=True)
         last_hidden_state = encoder_output_2.last_hidden_state
 
@@ -1284,15 +1289,10 @@ class TextModel(nn.Module):
         pooled_output = last_hidden_state[torch.arange(last_hidden_state.shape[0], device=last_hidden_state.device),eos_token_index]
         pooled_output = self.text_encoders[1].text_projection(pooled_output)
 
-        encoder_hidden_states_2 = encoder_output_2.hidden_states[self.clip_skip]
+        encoder_hidden_states_2 = encoder_output_2.hidden_states[skip]
 
         # (b, n, 768) + (b, n, 1280) -> (b, n, 2048)
         encoder_hidden_states = torch.cat([encoder_hidden_states, encoder_hidden_states_2], dim=2)
-
-        # pooled_output is zero vector for empty text            
-        for i, token in enumerate(tokens[1]):
-            if token[1].item() == self.tokenizers[1].eos_token_id:
-                pooled_output[i] = 0
 
         return encoder_hidden_states, pooled_output
     
