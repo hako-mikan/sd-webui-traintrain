@@ -1280,8 +1280,12 @@ class TextModel(nn.Module):
     
     def encode_sdxl(self, tokens):
         # SDXL takes the penultimate hidden state from both encoders, the way the
-        # web-ui and diffusers do. The last one is not merely a different layer:
-        # OpenCLIP's final block overflows fp16 and the conditioning comes out NaN.
+        # web-ui and diffusers do, and this used to take the last one. Which is
+        # not merely the neighbouring layer: on some checkpoints a final CLIP
+        # block overflows fp16 and the conditioning comes out NaN, and on the
+        # rest it is simply on another scale - IllustriousXL's OpenCLIP-G peaks
+        # at 111 there against 70 one layer earlier. Either way the LoRA was
+        # being fitted to conditioning the sampler never produces.
         skip = self.clip_skip if self.clip_skip <= -2 else -2
 
         encoder_hidden_states = self.text_encoders[0](tokens[0], output_hidden_states=True).hidden_states[skip]
