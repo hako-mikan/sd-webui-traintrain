@@ -938,6 +938,23 @@ def remap_zimage_transformer_state_dict(sd: dict) -> dict:
 # train the model Neo has already built and only adapt it to the interface the
 # training loop expects.
 
+def _needs_unlocking(t):
+    """Whether a tensor is an inference tensor, in the sense that matters: it
+    has no version counter and any op that would need one raises "Inference
+    tensors do not track version counter." Tensor.is_inference() answers a
+    narrower question and can say False for exactly such a tensor - observed
+    on Anima's own patch embedder, whose weight reported is_inference() False
+    while ._version raised the same error accessing it directly. Whatever
+    Forge Neo's own weight streaming does to leave a parameter in that state,
+    checking the thing that actually fails is the only check that catches it.
+    """
+    try:
+        t._version
+        return False
+    except RuntimeError:
+        return True
+
+
 def unlock_inference_tensors(module):
     """Neo builds its models inside torch.inference_mode(). An inference tensor
     can never take part in autograd, not even as a frozen operand, so the base
@@ -947,16 +964,17 @@ def unlock_inference_tensors(module):
     with torch.no_grad():
         for m in module.modules():
             for name, p in list(m._parameters.items()):
-                if p is None or not p.is_inference():
+                if p is None or not _needs_unlocking(p):
                     continue
                 m._parameters[name] = nn.Parameter(p.clone(), requires_grad=False)
                 freed += 1
             for name, b in list(m._buffers.items()):
-                if b is None or not torch.is_tensor(b) or not b.is_inference():
+                if b is None or not torch.is_tensor(b) or not _needs_unlocking(b):
                     continue
                 m._buffers[name] = b.clone()
                 freed += 1
-    print(f"[Forge Neo] {freed} tensors taken out of inference mode")
+    if freed:
+        print(f"[Forge Neo] {freed} tensors taken out of inference mode")
     return module
 
 
@@ -1138,6 +1156,14 @@ class NeoDiT(nn.Module):
         if latents.dim() == 4:
             latents = latents.unsqueeze(2)
         dtype = getattr(self.model, "computation_dtype", latents.dtype)
+        # Forge Neo still owns this module and keeps managing its own
+        # residency underneath us - a generation run in between two training
+        # calls, in particular, leaves some of its weights unlocked at setup
+        # but back in a state a version-counter check chokes on by the time
+        # training actually runs. Cheap next to an actual forward pass, so
+        # re-assert it on every call rather than trust that the one unlock at
+        # setup still holds.
+        unlock_inference_tensors(self.model)
         device = next(self.model.parameters()).device
         latents = latents.to(device = device, dtype = dtype)
         cond = cond.to(device = device, dtype = dtype)
