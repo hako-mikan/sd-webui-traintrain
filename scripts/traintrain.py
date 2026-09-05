@@ -132,6 +132,24 @@ logging_save_csv = ["logging_save_csv","CH",False,"",bool,NDIFF2]
 model_v_pred = ["model_v_pred", "CH",None,False,bool,ALL]
 diff_alt_ratio  = ["diff_alt_ratio","TX",None,"1",float,MDIFF]
 
+# Self-regularization. A character LoRA does not only learn the trigger word: the
+# tags that sit beside it in every caption, 1girl and solo and the like, learn the
+# character too, so the LoRA fires on those alone. Regularization images are the
+# usual answer and they are weak, because the frozen model does not denoise them
+# perfectly either - the loss has a floor, and the optimizer keeps moving the LoRA
+# even when the LoRA is doing nothing wrong.
+#
+# Instead, hold the model to its own behaviour. At the same point in the latent,
+# with the trigger word taken out of the caption, the LoRA's prediction must match
+# what the frozen model predicted there. No images, nothing to curate, and the
+# loss is exactly zero while the LoRA is zero, so there is no floor to drift on.
+# It is iLECO's comparison with the same prompt on both sides.
+train_self_reg = ["train_self_reg","TX",None,0,float,LORA]
+train_self_reg_filler = ["train_self_reg_filler","TX",None,"",str,LORA]
+train_self_reg_noise = ["train_self_reg_noise","TX",None,0,float,LORA]
+train_self_reg_batched = ["train_self_reg_batched","CH",None,False,bool,LORA]
+image_shuffle_tags = ["image_shuffle_tags","CH",None,False,bool,LORA_MDIFF]
+
 network_blocks = ["network_blocks(BASE = TextEncoder)","CB",BLOCKID26,BLOCKID26,list,ALL]
 
 #unuased parameters
@@ -152,11 +170,12 @@ row1 = [network_blocks]
 
 o_column1 = [network_resume,network_strength,network_conv_rank,network_conv_alpha,network_element,network_train_text_encoder,image_buckets_step,image_num_multiply,
                      image_min_length,image_max_ratio,sub_image_num,image_mirroring,
-                     image_use_filename_as_tag,image_disable_upscale,train_fixed_timsteps_in_batch]
+                     image_use_filename_as_tag,image_disable_upscale,train_fixed_timsteps_in_batch,image_shuffle_tags]
                      
 o_column2 = [train_textencoder_learning_rate,train_seed,train_min_timesteps,train_max_timesteps,train_loss_function,train_lr_step_rules, train_lr_warmup_steps, train_lr_scheduler_num_cycles,train_lr_scheduler_power, 
                      train_snr_gamma,save_per_steps,diff_alt_ratio,
-                     diff_revert_original_target,diff_use_diff_mask]
+                     diff_revert_original_target,diff_use_diff_mask,
+                     train_self_reg,train_self_reg_filler,train_self_reg_noise,train_self_reg_batched]
 o_column3 = [train_model_precision, train_lora_precision,save_precision,train_VAE_precision,diff_load_1st_pass, diff_save_1st_pass,diff_1st_pass_only,
                     logging_save_csv,logging_verbose,save_overwrite, save_as_json,model_v_pred]
 

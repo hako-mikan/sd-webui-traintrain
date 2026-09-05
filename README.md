@@ -7,6 +7,8 @@
 [<img src="https://img.shields.io/badge/Support-%E2%99%A5-magenta.svg?logo=github&style=plastic" height="25" />](https://github.com/sponsors/hako-mikan)
 
 # Recent Update
+2026.09.05 Added self-regularization, which holds the tags beside the trigger word to what the model already did with them
+
 2026.09.04 Support Anima and Krea2 on Forge Neo
 
 2025.12.09 Support Z-Image Turbo
@@ -77,6 +79,17 @@ Learn LoRA from images.
 
 ### Approach to Captions
    Let's say you're training a character named A. A has twin tails, wears a blue shirt, and a red skirt. If there's a picture of A against a white background, the caption should include A's name, the direction they're facing, and that the background is white. Elements unique to A, like twin tails, blue shirt, and red skirt, shouldn't be included in the caption as they are specific to A and you want to train for them. However, direction, background, and composition, which you don't want to learn, should be included.
+
+### Self-Regularization
+   A character LoRA does not only learn its trigger word. The tags standing beside it in every caption - `1girl`, `solo` and the rest - learn the character too, so the LoRA fires on those alone. Regularization images are the usual answer, and they are weak: the frozen model does not denoise them perfectly either, so the loss has a floor and the optimizer keeps moving the LoRA even where the LoRA is doing nothing wrong.
+
+   Setting `train self reg` above 0 holds the model to its own behaviour instead. At the same point in the latent, with the trigger word taken out of the caption, the LoRA's prediction has to match what the frozen model predicted there. No images to prepare, and the loss is exactly zero while the LoRA is zero, so there is no floor to drift on: whatever the LoRA does change has to be carried by the trigger word.
+
+   It cannot separate them completely - the character is a `1girl`, so its part of the latent cannot be left untouched - so `train self reg` is the trade between how faithfully the character is learned and how cleanly the rest is left alone. Start at 1.
+
+   Steps alternate: one learns the character, the next holds the rest of the caption still. So set roughly twice the iterations you would otherwise. With `train batch size` of 2 or more, `train self reg batched` puts both in the same step instead, as two half batches that take the memory of one whole one - and then the two halves share the very same point in the latent, which makes the comparison tighter.
+
+   Taking a word out of the caption moves every tag after it along, and the LoRA can end up keying on where the tags sit rather than on the word itself. `image shuffle tags` shuffles the caption so no position is reliable, and `train self reg filler` puts a word in the slot the trigger left so nothing moves at all. Both are worth having on.
 
 ## iLECO
    iLECO (instant-LECO) is a faster version of LECO training, transforming the concept specified in Original Prompt closer to the concept in Target Prompt. If nothing is entered in Target Prompt, it becomes training to remove that concept.
@@ -149,6 +162,11 @@ Optional, so they work even if not specified.
 | image max ratio | Specifies the maximum aspect ratio. |
 | sub image num | The number of times the image is reduced to different resolutions. |
 | image mirroring | Mirrors the image horizontally. |
+| image shuffle tags | Shuffles the order of the tags in the caption. |
+| train self reg | Weight of self-regularization; 0 turns it off. See [Self-Regularization](#self-regularization). |
+| train self reg filler | Word put where the trigger word was taken out, so the tags after it do not move. |
+| train self reg noise | How often the held prompt is checked on pure noise rather than on a training image, 0 to 1. Covers latents the images never reach. |
+| train self reg batched | Holds the prompt still in the same step rather than in alternate steps. Needs a batch size of 2 or more. |
 | save per steps | Saves LoRA at specified steps. |
 | save overwrite | Whether to overwrite when saving. |
 | save as json | Whether to save the settings during learning execution. The settings are saved by date in the json folder of the extension. |

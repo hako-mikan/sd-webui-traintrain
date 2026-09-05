@@ -32,7 +32,7 @@ def flexible_collate_fn(batch):
     output = {}
     for key in batch[0].keys():
         l = [d[key] for d in batch]
-        if key == "cond1":
+        if key in ("cond1", "anchor1"):
             output[key] = l
         else:
             output[key] = torch.stack(l)
@@ -103,10 +103,13 @@ class LatentsConds(Dataset):
             if isinstance(orig_mask, torch.Tensor): batch["mask"] = orig_mask.squeeze().cpu()
 
         else:
-            latent, mask, cond1, cond2 = self.latents_conds[i]
+            latent, mask, cond1, cond2 = self.latents_conds[i][:4]
+            anchor1, anchor2 = (list(self.latents_conds[i]) + [None, None])[4:6]
             batch["latent"] = latent.squeeze().cpu()
             if cond1 is not None: batch["cond1"] = cond1 if isinstance(cond1, str) else cond1.squeeze().cpu()
-            if cond2 is not None: batch["cond2"] = cond2 if isinstance(cond2, str) else cond2.squeeze().cpu()  
+            if cond2 is not None: batch["cond2"] = cond2 if isinstance(cond2, str) else cond2.squeeze().cpu()
+            if anchor1 is not None: batch["anchor1"] = anchor1 if isinstance(anchor1, str) else anchor1.squeeze().cpu()
+            if anchor2 is not None: batch["anchor2"] = anchor2 if isinstance(anchor2, str) else anchor2.squeeze().cpu()
             if isinstance(mask, torch.Tensor): batch["mask"] = mask.squeeze().cpu()
         return batch
 
@@ -331,30 +334,49 @@ def load_text_files(file_path):
     with open(file_path, 'r', encoding='utf-8') as file:
             return file.read()
 
+def split_tags(text):
+    return [x.strip() for x in text.split(",") if x.strip()] if text else []
+
+
+def build_prompts(t, text, caption, filename):
+    """The prompt to train on, and the one self-regularization holds still.
+
+    They carry the same tags in the same order and differ only in the trigger
+    word, which is the whole point: whatever the LoRA changes has to be carried
+    by that word alone. Deleting the trigger outright moves every tag after it
+    along, though, and the LoRA can key on where the tags sit rather than on the
+    word - so there is a filler to keep the slot occupied, and a shuffle to stop
+    any position being reliable in the first place."""
+    body = filename if t.image_use_filename_as_tag else (text if text is not None else caption)
+    tags = split_tags(body)
+
+    if t.image_shuffle_tags:
+        tags = list(tags)
+        random.shuffle(tags)
+
+    lead = split_tags(t.lora_trigger_word)
+    filler = split_tags(t.train_self_reg_filler)
+    return ", ".join(lead + tags), ", ".join(filler + tags)
+
+
 def encode_image_text(t):
     with torch.no_grad():
-        emp1, emp2 = t.text_model.encode_text(t.lora_trigger_word)
         bar = tqdm(total = t.total_images)
         for key in t.image_buckets_raw:
             pairdict = {}
             for image, mask, text, caption, filename, img_path, targ_path in t.image_buckets_raw[key]:
                 latent = t.image2latent(t,image)
-                if t.image_use_filename_as_tag:
-                    prompt = t.lora_trigger_word + "," + filename
-                elif text is not None:
-                    prompt = t.lora_trigger_word + ", " + text
-                elif caption is not None:
-                    prompt = t.lora_trigger_word + ", " + caption
-                else:
-                    prompt = t.lora_trigger_word
+                prompt, anchor = build_prompts(t, text, caption, filename)
                 t.tagcount(prompt)
                 # the Forge Neo models cannot train their text encoder, and it is
                 # shuffled off the card once training starts, so encode up front
                 if "BASE" not in t.network_blocks or t.is_anima or t.is_krea:
-                    emb1, emb2 = (emp1, emp2) if prompt is None else t.text_model.encode_text(prompt)
+                    emb1, emb2 = t.text_model.encode_text(prompt)
+                    anc1, anc2 = t.text_model.encode_text(anchor) if t.train_self_reg > 0 else (None, None)
                 else:
                     emb1 = emb2 = prompt
-                t.image_buckets[key].append([latent, mask, emb1, emb2])
+                    anc1 = anc2 = anchor if t.train_self_reg > 0 else None
+                t.image_buckets[key].append([latent, mask, emb1, emb2, anc1, anc2])
                 bar.update(1)
                 pairdict[img_path] = [latent, mask, emb1, emb2, targ_path, image]
             
