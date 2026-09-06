@@ -306,6 +306,41 @@ def train_main(jsononly_or_paths, mode, modelname, vaename, tename, *args):
     if not forge: sd_models.model_data.loaded_sd_models = [] #web-uiのバグ対策
 
     return result
+#### Self-regularization ###########################################################
+# A character LoRA does not only learn its trigger word. The tags that stand
+# beside it in every caption - 1girl, solo and the rest - learn the character too,
+# so the LoRA fires on those alone. Regularization images are the usual answer and
+# they are weak: the frozen model does not denoise them perfectly either, so the
+# loss has a floor and the optimizer keeps moving the LoRA even where the LoRA is
+# doing nothing wrong.
+#
+# Hold the model to its own behaviour instead. At the same point in the latent,
+# with the trigger word taken out of the caption, the LoRA's prediction has to
+# match what the frozen model predicted there. That is iLECO's comparison with the
+# same prompt on both sides, and it costs no images: the loss is exactly zero
+# while the LoRA is zero, so there is no floor to drift on, and whatever the LoRA
+# does change has to be carried by the trigger word.
+#
+# It cannot separate them completely - the character is a 1girl, so its part of
+# the latent cannot be left untouched - and train_self_reg is the trade between
+# how faithfully the character is learned and how cleanly the rest is left alone.
+
+def unet_predict(t, noisy_latents, timesteps, conds, added_cond_kwargs = None):
+    if t.is_zimage:
+        latents_in = list(noisy_latents.unsqueeze(2).unbind(0))
+        out, _ = t.unet(latents_in, timesteps, conds)
+        return -torch.stack(out, dim = 0).squeeze(dim = 2)
+    return t.unet(noisy_latents, timesteps, conds, added_cond_kwargs = added_cond_kwargs).sample
+
+
+def to_train(t, conds):
+    if conds is None:
+        return None
+    if isinstance(conds, torch.Tensor):
+        return conds.to(CUDA, dtype = t.train_lora_precision)
+    return [c.to(CUDA, dtype = t.train_lora_precision) for c in conds]
+
+
 def train_lora(t):
     global stoptimer
     stoptimer = 0
@@ -334,6 +369,11 @@ def train_lora(t):
     loss_ema = None
     loss_velocity = None
 
+    anchor_ema = 0
+
+    if t.train_self_reg > 0 and t.train_self_reg_batched and t.train_batch_size < 2:
+        t.a.print("Self-regularization needs a batch of two or more to hold both halves in one step, alternating instead")
+
     pbar = tqdm(range(t.train_iterations))
     while t.train_iterations >= pbar.n:
         for batch in t.dataloader:
@@ -341,6 +381,26 @@ def train_lora(t):
                 latents = batch["latent"].to(CUDA, dtype=t.train_lora_precision)
                 conds1 = batch["cond1"]
                 conds2 = batch["cond2"] if "cond2" in batch else None
+                anchor1 = batch["anchor1"] if "anchor1" in batch else None
+                anchor2 = batch["anchor2"] if "anchor2" in batch else None
+
+                # Steps alternate between learning the character and holding the
+                # rest of the caption still, unless the batch is big enough to
+                # carry both: two half batches take the memory of one whole one,
+                # and then the two halves share the very same point in the latent.
+                selfreg = t.train_self_reg > 0 and anchor1 is not None
+                together = selfreg and t.train_self_reg_batched and len(latents) > 1
+                anchor_only = selfreg and not together and pbar.n % 2 == 1
+
+                if together:
+                    half = len(latents) // 2
+                    latents, conds1, anchor1 = latents[:half], conds1[:half], anchor1[:half]
+                    conds2 = conds2[:half] if conds2 is not None else None
+                    anchor2 = anchor2[:half] if anchor2 is not None else None
+
+                if anchor_only and random.random() < t.train_self_reg_noise:
+                    # somewhere the training images never reach, the way iLECO works
+                    latents = torch.randn_like(latents)
 
                 noise = torch.randn_like(latents)
                 batch_size = latents.shape[0]
@@ -348,37 +408,56 @@ def train_lora(t):
                 if t.is_flow:
                     timesteps, noisy_latents, target = apply_flow_matching_noise(latents, noise, t.flow_shift)
                 else:
-                    timesteps = torch.randint(t.train_min_timesteps, t.train_max_timesteps, ((1 if t.train_fixed_timsteps_in_batch else batch_size),), device=CUDA) 
+                    timesteps = torch.randint(t.train_min_timesteps, t.train_max_timesteps, ((1 if t.train_fixed_timsteps_in_batch else batch_size),), device=CUDA)
                     timesteps = torch.cat([timesteps.long()] * (batch_size if t.train_fixed_timsteps_in_batch else 1))
                     noisy_latents = t.noise_scheduler.add_noise(latents, noise, timesteps)
-                    target = noise 
+                    target = noise
+
+                # The frozen side has to come from the frozen text encoder as well,
+                # or a text encoder LoRA would sit on both sides of the comparison
+                # and go unregularized - which is where much of the leak lives.
+                base1 = base2 = None
+                if selfreg and isinstance(anchor1[0], str):
+                    with torch.no_grad(), t.a.autocast():
+                        base1, base2 = t.text_model.encode_text(anchor1)
 
                 with network, t.a.autocast():
                     if isinstance(conds1[0], str):
                         conds1, conds2 = t.text_model.encode_text(conds1)
-                    
-                    conds1 = conds1.to(CUDA, dtype=t.train_lora_precision) if type(conds1) is torch.Tensor else [c.to(CUDA, dtype=t.train_lora_precision) for c in conds1]
-                    if conds2 is not None:
-                        conds2 = conds2.to(CUDA, dtype=t.train_lora_precision)
+                    if selfreg and isinstance(anchor1[0], str):
+                        anchor1, anchor2 = t.text_model.encode_text(anchor1)
 
-                    added_cond_kwargs = get_added_cond_kwargs(t, conds2, batch_size, size = [*latents.shape[2:4]])
- 
-                    if t.is_zimage:
-                        noisy_latents_in = noisy_latents.unsqueeze(2)
-                        noisy_latents_list = list(noisy_latents_in.unbind(0))
-                        noise_pred_out, _ = t.unet(noisy_latents_list, timesteps, conds1)
-                        
-                        noise_pred = -torch.stack(noise_pred_out, dim=0).squeeze(dim=2)
-                    else:
-                        noise_pred = t.unet(noisy_latents, timesteps, conds1, added_cond_kwargs = added_cond_kwargs).sample
+                    conds1, conds2 = to_train(t, conds1), to_train(t, conds2)
+                    anchor1, anchor2 = to_train(t, anchor1), to_train(t, anchor2)
+
+                    size = [*latents.shape[2:4]]
+                    added_cond_kwargs = get_added_cond_kwargs(t, conds2, batch_size, size = size)
+                    anchor_kwargs = get_added_cond_kwargs(t, anchor2, batch_size, size = size) if selfreg else None
+
+                    noise_pred = None if anchor_only else unet_predict(t, noisy_latents, timesteps, conds1, added_cond_kwargs)
+                    anchor_pred = unet_predict(t, noisy_latents, timesteps, anchor1, anchor_kwargs) if anchor_only or together else None
+
+                base_pred = None
+                if anchor_pred is not None:
+                    frozen1 = to_train(t, base1) if base1 is not None else anchor1
+                    frozen_kwargs = get_added_cond_kwargs(t, to_train(t, base2), batch_size, size = size) if base2 is not None else anchor_kwargs
+                    with torch.no_grad(), t.a.autocast():
+                        base_pred = unet_predict(t, noisy_latents, timesteps, frozen1, frozen_kwargs)
 
                 if t.model_v_pred:
                     target = t.noise_scheduler.get_velocity(latents, noise, timesteps)
 
-                loss, loss_ema, loss_velocity = process_loss(t, noise_pred, target, timesteps, loss_ema, loss_velocity)
+                loss = 0
+                if noise_pred is not None:
+                    loss, loss_ema, loss_velocity = process_loss(t, noise_pred, target, timesteps, loss_ema, loss_velocity)
+
+                if anchor_pred is not None:
+                    anchor_loss, anchor_ema, _ = process_loss(t, anchor_pred, base_pred, timesteps, anchor_ema, 0)
+                    loss = loss + t.train_self_reg * anchor_loss
 
                 c_lrs = [f"{x:.2e}" for x in lr_scheduler.get_last_lr()]
-                pbar.set_description(f"Loss EMA * 1000: {loss_ema * 1000:.4f}, Current LR: "+", ".join(c_lrs)+ f", Epoch: {t.dataloader.epoch}")   
+                held = f", Held EMA * 1000: {anchor_ema * 1000:.4f}" if selfreg else ""
+                pbar.set_description(f"Loss EMA * 1000: {loss_ema * 1000:.4f}{held}, Current LR: "+", ".join(c_lrs)+ f", Epoch: {t.dataloader.epoch}")
                 pbar.update(1)
 
                 if t.logging_save_csv:
