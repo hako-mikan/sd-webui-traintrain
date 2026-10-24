@@ -21,7 +21,10 @@ def make_dataloaders(t):
         if test: save_images(t, key, t.image_buckets_raw[key])
         dataset = LatentsConds(t, t.image_buckets[key])
         if dataset.__len__() > 0:
-            dataloaders.append(DataLoader(dataset, batch_size=t.train_batch_size, shuffle=True, collate_fn = flexible_collate_fn if t.is_zimage else None))
+            # on these a caption is as many tokens long as it is written, so the
+            # captions of one batch cannot be stacked into a single tensor
+            ragged = t.is_zimage or t.is_krea or t.is_moss
+            dataloaders.append(DataLoader(dataset, batch_size=t.train_batch_size, shuffle=True, collate_fn = flexible_collate_fn if ragged else None))
         
     return dataloaders
 
@@ -370,7 +373,7 @@ def encode_image_text(t):
                 t.tagcount(prompt)
                 # the Forge Neo models cannot train their text encoder, and it is
                 # shuffled off the card once training starts, so encode up front
-                if "BASE" not in t.network_blocks or t.is_anima or t.is_krea:
+                if "BASE" not in t.network_blocks or t.is_neo_native:
                     emb1, emb2 = t.text_model.encode_text(prompt)
                     anc1, anc2 = t.text_model.encode_text(anchor) if t.train_self_reg > 0 else (None, None)
                 else:

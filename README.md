@@ -7,6 +7,10 @@
 [<img src="https://img.shields.io/badge/Support-%E2%99%A5-magenta.svg?logo=github&style=plastic" height="25" />](https://github.com/sponsors/hako-mikan)
 
 # Recent Update
+2026.10.25.0200(JST)
+- Support MOSS-Image on Forge Neo
+- Fix training Krea2 with a batch size above 1 when the captions differ in length; such a batch is now run one caption at a time
+
 2026.09.05 Added self-regularization, which holds the tags beside the trigger word to what the model already did with them
 
 2026.09.04 Support Anima and Krea2 on Forge Neo
@@ -50,8 +54,9 @@ This is a tool for training LoRA for Stable Diffusion. It operates as an extensi
 |Z-Image|Forge Neo, standalone|needs a diffusers with `attention_dispatch`, which Forge Neo ships|
 |Anima|Forge Neo|checked on 2B; 2.9B and 3.8B take the same path|
 |Krea2|Forge Neo|slow: these checkpoints arrive quantized and the weights are unpacked as they are used|
+|MOSS-Image|Forge Neo|checked on the SFT bf16 checkpoint at 512px; captions of different lengths in one batch are run one by one|
 
-   Anima and Krea2 exist only inside Forge Neo, so TrainTrain trains the model
+   Anima, Krea2 and MOSS-Image exist only inside Forge Neo, so TrainTrain trains the model
 Forge Neo has already loaded rather than building its own. Two consequences: the
 text encoder cannot be trained for them, so `BASE` in `network blocks` has no
 effect, and the checkpoint has to be selected in the Forge Neo preset for its

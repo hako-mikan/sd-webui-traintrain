@@ -115,7 +115,7 @@ OPTIMIZERS = ["AdamW", "AdamW8bit", "AdaFactor", "Lion", "Prodigy", SEP,
 
 class Trainer():
     def __init__(self, jsononly, model, vae, te, mode, values):
-        self.is_anima = self.is_krea = False
+        self.is_anima = self.is_krea = self.is_moss = False
         self.vae_latents_mean = self.vae_latents_std = None
         if type(jsononly) is list:
             paths = jsononly
@@ -309,6 +309,7 @@ class Trainer():
             self.is_zimage = name == "ZImage"
             self.is_anima = name == "Anima"
             self.is_krea = name == "Krea2"
+            self.is_moss = name == "MOSSImage"
         else:
             self.is_sd1 = ver == 0
             self.is_sd2 = ver == 1
@@ -318,8 +319,9 @@ class Trainer():
             self.is_zimage = ver == 5
             self.is_anima = ver == 6
             self.is_krea = ver == 7
+            self.is_moss = ver == 8
 
-        #sdver: 0:sd1 ,1:sd2, 2:sdxl, 3:sd3, 4:flux, 5:zimage, 6:anima, 7:krea
+        #sdver: 0:sd1 ,1:sd2, 2:sdxl, 3:sd3, 4:flux, 5:zimage, 6:anima, 7:krea, 8:moss
         if self.is_sdxl:
             self.model_version = "sdxl_base_v1-0"
             self.vae_scale_factor = 0.13025
@@ -354,18 +356,29 @@ class Trainer():
             self.vae_latents_mean = WAN_LATENTS_MEAN
             self.vae_latents_std = WAN_LATENTS_STD
             self.sdver = 6 if self.is_anima else 7
+        elif self.is_moss:
+            # the Flux.2 autoencoder normalises its latent itself, Neo's
+            # latent format passes it through unchanged
+            self.model_version = "moss_image"
+            self.vae_scale_factor = 1.0
+            self.vae_shift_factor = 0
+            self.vae_latents_mean = self.vae_latents_std = None
+            self.sdver = 8
         else:
             self.model_version = "sd_v1"
             self.vae_scale_factor = 0.18215
             self.vae_shift_factor = 0
             self.sdver = 0
         
-        self.is_dit = self.is_sd3 or self.is_flux or self.is_zimage or self.is_anima or self.is_krea
+        # the models that only exist inside Forge Neo and are trained through it
+        self.is_neo_native = self.is_anima or self.is_krea or self.is_moss
+        self.is_dit = self.is_sd3 or self.is_flux or self.is_zimage or self.is_neo_native
         self.is_te2 = self.is_sdxl or self.is_sd3
 
         # these are trained by flow matching rather than with the DDPM scheduler
-        self.is_flow = self.is_zimage or self.is_anima or self.is_krea
-        self.flow_shift = 1.15 if self.is_krea else 3.0
+        self.is_flow = self.is_zimage or self.is_neo_native
+        # the shift each one samples with: Neo's presets use 5 for MOSS-Image
+        self.flow_shift = 1.15 if self.is_krea else 5.0 if self.is_moss else 3.0
 
         print("Base Model : ", self.model_version)
     
@@ -933,7 +946,7 @@ def remap_zimage_transformer_state_dict(sd: dict) -> dict:
 
 
 #### Forge Neo native models ####################################################
-# Anima and Krea2 only exist inside Forge Neo. Rather than carry a second
+# Anima, Krea2 and MOSS-Image only exist inside Forge Neo. Rather than carry a second
 # implementation of each transformer here, and keep it in step with Neo forever,
 # train the model Neo has already built and only adapt it to the interface the
 # training loop expects.
@@ -1056,6 +1069,67 @@ def _krea_single_stream_forward(self, x, vec, freqs, mask = None, transformer_op
     return torch.addcmul(x, postgate, self.mlp(torch.addcmul(postshift, 1 + postscale, self.postnorm(x))))
 
 
+# MOSS-Image adds into its residual stream in place (addcmul_) and goes through
+# Comfy-Kitchen's fused rms_adaln, rope and situ kernels, all forward only.
+# These are the same sums, out of place and eager.
+
+def _moss_attention(q, k, v, q_norm, k_norm, pe, heads, transformer_options = {}):
+    B, N, _ = q.shape
+    q, k = _eager_rope().rms_rope_split_half(
+        q.view(B, N, heads, -1), k.view(B, N, heads, -1), pe,
+        q_norm.weight.to(q.dtype), k_norm.weight.to(k.dtype), q_norm.eps,
+    )
+    return _pytorch_attention()(q.flatten(2), k.flatten(2), v.flatten(2), heads, transformer_options = transformer_options)
+
+
+def _moss_adaln(x, norm, scale, shift):
+    # rms_adaln(x, weight * (1 + scale) - 1, shift) is rmsnorm(x) * weight * (1 + scale) + shift
+    normed = torch.nn.functional.rms_norm(x, x.shape[-1:], eps = norm.eps)
+    return normed * (norm.weight.to(x.dtype) * (1 + scale)) + shift
+
+
+def _moss_situ(hidden, gate):
+    return (4.0 * torch.tanh(gate / 4.0) * torch.sigmoid(gate)) * (25.0 * torch.tanh(hidden / 25.0))
+
+
+def _moss_block_forward(self, x, mod, pe, transformer_options = {}):
+    shift_a, scale_a, gate_a, shift_f, scale_f, gate_f = mod
+    y = _moss_adaln(x, self.norm1, scale_a, shift_a)
+    if self.fused_qkv:
+        q, k, v = self.proj["qkv"](y).chunk(3, dim = -1)
+    else:
+        q, k, v = self.proj["q"](y), self.proj["k"](y), self.proj["v"](y)
+    x = x + self.proj["o"](_moss_attention(q, k, v, self.q_norm, self.k_norm, pe, self.num_heads, transformer_options)) * gate_a
+    y = _moss_adaln(x, self.norm2, scale_f, shift_f)
+    hidden, gate = self.proj["ffn_up_gate"](y).chunk(2, dim = -1)
+    return x + self.proj["ffn_down"](_moss_situ(hidden, gate)) * gate_f
+
+
+def _moss_text_block_forward(self, x, pe, transformer_options = {}):
+    q, k, v = self.qkv(self.norm1(x)).chunk(3, dim = -1)
+    x = x + self.proj(_moss_attention(q, k, v, self.q_norm, self.k_norm, pe, self.num_heads, transformer_options))
+    y = self.norm2(x)
+    return x + self.ffn_down(_moss_situ(self.ffn_up(y), self.ffn_gate(y)))
+
+
+def _moss_forward(self, x, timestep, context, transformer_options = {}, **kwargs):
+    from backend.nn.flux import timestep_embedding
+
+    B, _, H, W = x.shape
+    pe = self.rope(H, W, context.shape[1], x.device)
+    vec = self.time_embedding(timestep_embedding(timestep, 256).to(x.dtype))
+    mod = self.shared_block_modulation(vec).unflatten(-1, (6, -1)).unsqueeze(2).unbind(1)
+    head_shift, head_scale = self.video_head_modulation(vec).unflatten(-1, (2, -1)).unsqueeze(2).unbind(1)
+
+    txt = self.text_embedder(context, pe[:, H * W :], transformer_options)
+    x = torch.cat((self.video_embedder(x.flatten(2).transpose(1, 2)), txt), dim = 1)
+    for block in self.layers:
+        x = block(x, mod, pe, transformer_options)
+
+    out = self.final_linear_video(_moss_adaln(x[:, : H * W], self.final_norm_video, head_scale, head_shift))
+    return out.transpose(1, 2).reshape(B, self.latent_channels, H, W)
+
+
 def _mixed_precision_linear_forward(self, input, *args, **kwargs):
     """Neo's mixed precision Linear multiplies in the quantized format and
     asserts the input carries no gradient. Unpack the weight and multiply in the
@@ -1081,13 +1155,21 @@ BACKWARD_SAFE_FORWARDS = {
     "SingleStreamBlock": _krea_single_stream_forward,
 }
 
+# Anima has a class called Block too, so these go by the module they come from
+MOSS_SAFE_FORWARDS = {
+    "Block": _moss_block_forward,
+    "TextBlock": _moss_text_block_forward,
+    "MOSSImage": _moss_forward,
+}
+
 
 def make_backward_safe(module):
     import types
 
     patched = quantized = 0
     for m in module.modules():
-        replacement = BACKWARD_SAFE_FORWARDS.get(type(m).__name__)
+        table = MOSS_SAFE_FORWARDS if type(m).__module__ == "backend.nn.moss_image" else BACKWARD_SAFE_FORWARDS
+        replacement = table.get(type(m).__name__)
         if replacement is not None:
             m.forward = types.MethodType(replacement, m)
             patched += 1
@@ -1130,8 +1212,15 @@ class NeoTextModel(nn.Module):
         cond = self.engine.get_learned_conditioning(NeoPrompts(list(prompts)))
         if isinstance(cond, list):
             # Anima hands back one batched (1, 512, 1024) per prompt, Krea2 an
-            # unbatched (tokens, 12, 2560)
-            cond = torch.cat(cond, dim = 0) if self.is_anima else torch.stack(cond, dim = 0)
+            # unbatched (tokens, 12, 2560) and MOSS-Image (tokens, 4096). The
+            # last two are as long as the prompt, so prompts of different
+            # lengths stay a list, which NeoDiT runs one by one
+            if self.is_anima:
+                cond = torch.cat(cond, dim = 0)
+            elif len({c.shape for c in cond}) == 1:
+                cond = torch.stack(cond, dim = 0)
+            else:
+                cond = [c.unsqueeze(0) for c in cond]
         return cond, None
 
     def gradient_checkpointing_enable(self):
@@ -1151,9 +1240,22 @@ class NeoDiT(nn.Module):
     def __init__(self, model):
         super().__init__()
         self.model = model
+        # Anima and Krea2 take the five dimensional latent of the Wan
+        # autoencoder, MOSS-Image the four dimensional one of Flux.2
+        self.wan = type(model).__name__ in ("Anima", "SingleStreamDiT")
 
     def forward(self, latents, timesteps, cond, added_cond_kwargs = None, **kwargs):
-        if latents.dim() == 4:
+        if isinstance(cond, (list, tuple)):
+            # one caption per entry, each (tokens, ...) or (1, tokens, ...).
+            # Captions of different lengths cannot share a batch on the models
+            # whose prompt is as long as it is written, so those run one by one
+            cond = [c if c.shape[0] == 1 else c.unsqueeze(0) for c in cond]
+            if len({c.shape for c in cond}) == 1:
+                cond = torch.cat(cond, dim = 0)
+            else:
+                outs = [self.forward(latents[i : i + 1], timesteps[i : i + 1], c).sample for i, c in enumerate(cond)]
+                return NeoDiTOutput(torch.cat(outs, dim = 0))
+        if latents.dim() == 4 and self.wan:
             latents = latents.unsqueeze(2)
         dtype = getattr(self.model, "computation_dtype", latents.dtype)
         # Forge Neo still owns this module and keeps managing its own
@@ -1237,14 +1339,14 @@ class NeoVAE(nn.Module):
 
 def load_checkpoint_model_neo(t):
     if standalone:
-        raise RuntimeError("TrainTrain: Anima and Krea2 can only be trained from inside Forge Neo")
+        raise RuntimeError("TrainTrain: Anima, Krea2 and MOSS-Image can only be trained from inside Forge Neo")
 
     engine = shared.sd_model
     transformer = engine.forge_objects.unet.model.diffusion_model
     name = type(transformer).__name__
 
-    if name not in ("Anima", "SingleStreamDiT"):
-        raise RuntimeError(f"TrainTrain: expected the Anima or Krea2 transformer, Forge Neo loaded {name}")
+    if name not in ("Anima", "SingleStreamDiT", "MOSSImage"):
+        raise RuntimeError(f"TrainTrain: expected the Anima, Krea2 or MOSS-Image transformer, Forge Neo loaded {name}")
 
     vae = NeoVAE(engine.forge_objects.vae)
 
