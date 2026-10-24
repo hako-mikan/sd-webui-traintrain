@@ -183,7 +183,7 @@ class LoRANetwork(nn.Module):
 
         self.unet_loras = self.load_fromfile(t, 4 if t.is_dit else 0) if t.network_resume else self.create_modules(t, 4 if t.is_dit else 0)
         
-        if "BASE" in t.network_blocks and not (t.is_anima or t.is_krea):# and t.mode == "LoRA":
+        if "BASE" in t.network_blocks and not t.is_neo_native:# and t.mode == "LoRA":
             self.te_loras = self.load_fromfile(t, 2 if t.is_te2 else 1) if t.network_resume else self.create_modules(t, 2 if t.is_te2 else 1)
             if t.is_te2:
                 self.te_loras += self.load_fromfile(t, 3) if t.network_resume else self.create_modules(t, 3)
@@ -364,7 +364,7 @@ class LoRANetwork(nn.Module):
             for key in list(state_dict.keys()):
                 outdict[self.fix_keys_zimage(key)] = state_dict[key]
             state_dict = outdict
-        elif t.is_anima or t.is_krea:
+        elif t.is_neo_native:
             # these are Forge Neo's own modules, so the flattened path already
             # matches the checkpoint. Neo reads that as lora_unet_<path>. The
             # model_ in between is the wrapper that adapts Neo's forward.

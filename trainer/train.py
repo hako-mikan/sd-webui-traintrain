@@ -140,7 +140,7 @@ def train_main(jsononly_or_paths, mode, modelname, vaename, tename, *args):
         flush()
         t.sd_typer(ver=model_version)
 
-        if t.is_anima or t.is_krea:
+        if t.is_neo_native:
             return f"{t.model_version} can only be trained from inside Forge Neo"
 
         vae = None
@@ -184,7 +184,7 @@ def train_main(jsononly_or_paths, mode, modelname, vaename, tename, *args):
         t.targ_cond, t.targ_vector  = text2cond(t, t.prompts[1])
         t.un_cond, t.un_vector = text2cond(t, t.prompts[2])
 
-        if t.is_anima or t.is_krea:
+        if t.is_neo_native:
             # take the transformer and the VAE out of the running model while it
             # is still there, the text encoder is not needed past this point
             neo_model = trainer.load_checkpoint_model_neo(t)
@@ -357,6 +357,7 @@ def train_lora(t):
         del t.text_model
     flush()
     print("t.train_model_precision",t.train_model_precision)
+    free_neo_text_encoder(t)
     t.unet = t.unet.to(CUDA, dtype=t.train_model_precision)
     
     t.a.print("Train LoRA Start")
@@ -490,6 +491,7 @@ def train_leco(t):
         del t.text_model
     flush()
     
+    free_neo_text_encoder(t)
     t.unet = t.unet.to(CUDA, dtype=t.train_model_precision)
    
     network, optimizer, lr_scheduler = create_network(t)
@@ -573,6 +575,7 @@ def train_diff(t):
         del t.text_model
     flush()
     
+    free_neo_text_encoder(t)
     t.unet = t.unet.to(CUDA, dtype=t.train_model_precision)
     
     print("Copy Machine Start")
@@ -693,6 +696,7 @@ def train_diff2(t):
     if "BASE" not in t.network_blocks:
         del t.text_model
     flush()
+    free_neo_text_encoder(t)
     t.unet = t.unet.to(CUDA, dtype=t.train_model_precision)
   
     network, optimizer, lr_scheduler = create_network(t)
@@ -804,6 +808,20 @@ def train_diff2(t):
     return result
 
 #### Prepare LoRA, Optimizer, lr_scheduler, Save###############################################
+def free_neo_text_encoder(t):
+    """Encoding the captions brings the Forge Neo text encoder back onto the
+    card, and Neo keeps it there. That costs little on Anima, but the 9B LLM of
+    MOSS-Image next to its 10GB transformer does not fit in 16GB and the run
+    crawled at tens of seconds a step. Let Neo unload whatever it holds before
+    the transformer goes on."""
+    if standalone or not getattr(t, "is_neo_native", False):
+        return
+    try:
+        free_memory(float("inf"), CUDA)
+    except Exception as e:
+        print("TrainTrain: could not unload the Forge Neo text encoder:", e)
+    flush()
+
 def flush():
     torch.cuda.empty_cache()
     torch.cuda.ipc_collect()
@@ -1077,6 +1095,8 @@ def detect_model_version(state_dict):
                   "model.diffusion_model.llm_adapter.blocks.0.cross_attn.q_proj.weight")
     krea_keys = ("txtfusion.projector.weight",
                  "model.diffusion_model.txtfusion.projector.weight")
+    moss_keys = ("shared_block_modulation.weight",
+                 "model.diffusion_model.shared_block_modulation.weight")
 
     if legacy_test_key in state_dict:
         match state_dict[legacy_test_key].shape[1]:
@@ -1098,5 +1118,7 @@ def detect_model_version(state_dict):
         return 6
     elif any(k in state_dict for k in krea_keys):
         return 7
+    elif any(k in state_dict for k in moss_keys):
+        return 8
     else:
         return -1
